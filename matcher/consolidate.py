@@ -9,7 +9,12 @@ from typing import Any
 
 import pandas as pd
 
-from .column_mapping import extract_standard_frame, map_columns, read_excel_with_headers
+from .column_mapping import (
+    extract_standard_frame,
+    map_columns,
+    read_excel_with_headers,
+    read_gstr_excel,
+)
 
 FIELD_TO_OUTPUT = {
     "gstin": "Supplier GSTIN",
@@ -67,10 +72,14 @@ def gstr_summary_caption(consolidated: pd.DataFrame) -> str:
     return " + ".join(parts) + " invoices"
 
 
-def _read_standard_register(source: Any, source_type: str, label_column: str) -> pd.DataFrame:
-    raw = read_excel_with_headers(source)
-    mapping = map_columns(raw)
-    std = extract_standard_frame(raw, mapping)
+def _read_standard_register(source: Any, source_type: str, label_column: str, is_gstr: bool = False) -> pd.DataFrame:
+    if is_gstr:
+        raw = read_gstr_excel(source)
+        std = raw.copy()
+    else:
+        raw = read_excel_with_headers(source)
+        mapping = map_columns(raw)
+        std = extract_standard_frame(raw, mapping)
     std[label_column] = source_type
     return std
 
@@ -87,7 +96,7 @@ def _consolidate_registers(
     for source, source_type in sources:
         if hasattr(source, "seek"):
             source.seek(0)
-        frames.append(_read_standard_register(source, source_type, label_column))
+        frames.append(_read_standard_register(source, source_type, label_column, is_gstr=label_column == GSTR_LABEL_COLUMN))
 
     return pd.concat(frames, ignore_index=True)
 

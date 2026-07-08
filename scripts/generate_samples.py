@@ -140,6 +140,28 @@ def main() -> None:
     gstr_apr.to_excel(gstr_apr_path, index=False)
     gstr_may.to_excel(gstr_may_path, index=False)
 
+    # GST portal style export with title rows and (₹) in headers
+    portal_headers = [
+        "GSTIN of supplier",
+        "Trade/Legal name",
+        "Invoice number",
+        "Invoice date",
+        "Taxable Value (₹)",
+        "Integrated Tax (₹)",
+        "Central Tax (₹)",
+        "State/UT Tax (₹)",
+    ]
+    portal_rows = [
+        ["27AABCU9603R1ZM", "ABC TRADERS PVT LTD", "INV-1001", "05-04-2025", 100000, 0, 9000, 9000],
+        ["29AACCT1234M1Z5", "XYZ SUPPLIES", "XYZ/2025/42", "10-04-2025", 50000, 8500, 0, 0],
+    ]
+    portal_path = SAMPLES_DIR / "sample_gstr2b_portal_format.xlsx"
+    with pd.ExcelWriter(portal_path, engine="openpyxl") as writer:
+        title_df = pd.DataFrame([["GSTR-2B", ""], ["Tax Period: 03-2026", ""]])
+        title_df.to_excel(writer, sheet_name="B2B", index=False, header=False, startrow=0)
+        portal_df = pd.DataFrame(portal_rows, columns=portal_headers)
+        portal_df.to_excel(writer, sheet_name="B2B", index=False, startrow=4)
+
     for path in (
         pr_path,
         sales_path,
@@ -149,6 +171,7 @@ def main() -> None:
         service_gstr_path,
         gstr_apr_path,
         gstr_may_path,
+        portal_path,
     ):
         print(f"Created {path}")
 

@@ -8,7 +8,12 @@ from typing import Any
 
 import pandas as pd
 
-from .column_mapping import extract_standard_frame, map_columns, read_excel_with_headers
+from .column_mapping import (
+    extract_standard_frame,
+    map_columns,
+    read_excel_with_headers,
+    read_gstr_excel,
+)
 from .consolidate import consolidate_gstr_registers, consolidate_purchase_registers
 from .normalize import (
     amounts_equal,
@@ -282,14 +287,9 @@ def load_and_match(
     tax_tolerance: float = 1.0,
 ) -> tuple[pd.DataFrame, MatchSummary]:
     pr_raw = read_excel_with_headers(purchase_file)
-    gstr_raw = read_excel_with_headers(gstr_file)
-
     pr_mapped = map_columns(pr_raw)
-    gstr_mapped = map_columns(gstr_raw)
-
     pr_std = extract_standard_frame(pr_raw, pr_mapped)
-    gstr_std = extract_standard_frame(gstr_raw, gstr_mapped)
-
+    gstr_std = read_gstr_excel(gstr_file)
     return match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
 
 
@@ -299,9 +299,7 @@ def load_and_match_consolidated(
     tax_tolerance: float = 1.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, MatchSummary]:
     pr_std = consolidate_purchase_registers(purchase_sources)
-    gstr_raw = read_excel_with_headers(gstr_file)
-    gstr_mapped = map_columns(gstr_raw)
-    gstr_std = extract_standard_frame(gstr_raw, gstr_mapped)
+    gstr_std = read_gstr_excel(gstr_file)
     result, summary = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
     return pr_std, gstr_std, result, summary
 
