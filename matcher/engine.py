@@ -313,8 +313,7 @@ def load_and_match_with_consolidation(
     gstr_std = consolidate_gstr_registers(gstr_sources)
     result, summary = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
     consolidated_pr = pr_std if len(purchase_sources) > 1 else None
-    consolidated_gstr = gstr_std if len(gstr_sources) > 1 else None
-    return consolidated_pr, consolidated_gstr, result, summary
+    return consolidated_pr, gstr_std, result, summary
 
 
 def export_to_excel(result: pd.DataFrame, summary: MatchSummary) -> bytes:

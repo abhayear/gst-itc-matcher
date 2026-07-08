@@ -27,6 +27,29 @@ FIELD_TO_OUTPUT = {
     "sgst": "SGST",
 }
 
+# Flat sample format like sample_gstr2b.xlsx (GST portal data simplified)
+GSTR_SAMPLE_COLUMNS = [
+    "GSTIN of supplier",
+    "Trade/Legal name",
+    "Invoice number",
+    "Invoice date",
+    "Taxable Value",
+    "Integrated tax(₹)",
+    "Central tax(₹)",
+    "State/UT tax(₹)",
+]
+
+GSTR_SAMPLE_FIELD_MAP = {
+    "gstin": "GSTIN of supplier",
+    "supplier_name": "Trade/Legal name",
+    "invoice_no": "Invoice number",
+    "invoice_date": "Invoice date",
+    "taxable_value": "Taxable Value",
+    "igst": "Integrated tax(₹)",
+    "cgst": "Central tax(₹)",
+    "sgst": "State/UT tax(₹)",
+}
+
 PR_LABEL_COLUMN = "register_type"
 GSTR_LABEL_COLUMN = "gstr_source"
 PR_LABEL_OUTPUT = "Register Type"
@@ -154,7 +177,22 @@ def consolidated_pr_to_display(consolidated: pd.DataFrame) -> pd.DataFrame:
 
 
 def consolidated_gstr_to_display(consolidated: pd.DataFrame) -> pd.DataFrame:
-    return consolidated_to_display(consolidated, GSTR_LABEL_COLUMN, GSTR_LABEL_OUTPUT)
+    return gstr_to_sample_format(consolidated)
+
+
+def gstr_to_sample_format(consolidated: pd.DataFrame) -> pd.DataFrame:
+    """Convert portal GSTR-2B data into flat sample-style Excel columns."""
+    display = pd.DataFrame(
+        {GSTR_SAMPLE_FIELD_MAP[field]: consolidated[field] for field in GSTR_SAMPLE_FIELD_MAP}
+    )
+    for col in ("Integrated tax(₹)", "Central tax(₹)", "State/UT tax(₹)", "Taxable Value"):
+        display[col] = pd.to_numeric(display[col], errors="coerce").fillna(0).round(2)
+    if GSTR_LABEL_COLUMN in consolidated.columns:
+        periods = consolidated[GSTR_LABEL_COLUMN].nunique()
+        if periods > 1:
+            display["Period"] = consolidated[GSTR_LABEL_COLUMN].values
+    display = display.reset_index(drop=True)
+    return display
 
 
 def _export_consolidated(
@@ -190,10 +228,21 @@ def export_consolidated_purchase_register(consolidated: pd.DataFrame) -> bytes:
 
 
 def export_consolidated_gstr(consolidated: pd.DataFrame) -> bytes:
-    return _export_consolidated(
-        consolidated,
-        GSTR_LABEL_COLUMN,
-        GSTR_LABEL_OUTPUT,
-        "Consolidated GSTR",
-        "#FCE4D6",
-    )
+    display = gstr_to_sample_format(consolidated)
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        display.to_excel(writer, sheet_name="GSTR-2B", index=False)
+        workbook = writer.book
+        worksheet = writer.sheets["GSTR-2B"]
+        header_fmt = workbook.add_format({"bold": True, "bg_color": "#D9E1F2", "border": 1})
+        for col_num, value in enumerate(display.columns.values):
+            worksheet.write(0, col_num, value, header_fmt)
+        worksheet.autofilter(0, 0, len(display), len(display.columns) - 1)
+        worksheet.freeze_panes(1, 0)
+        worksheet.set_column(0, 0, 18)
+        worksheet.set_column(1, 1, 28)
+        worksheet.set_column(2, 2, 18)
+        worksheet.set_column(3, 3, 14)
+        worksheet.set_column(4, 7, 14)
+    buffer.seek(0)
+    return buffer.getvalue()

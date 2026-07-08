@@ -162,9 +162,9 @@ if files_ready:
         with d3:
             if st.session_state.get("consolidated_gstr") is not None:
                 st.download_button(
-                    label="Download Consolidated GSTR-2A/2B",
+                    label="Download GSTR-2B (Sample Format)",
                     data=export_consolidated_gstr(st.session_state["consolidated_gstr"]),
-                    file_name="consolidated_gstr2a_2b.xlsx",
+                    file_name="consolidated_gstr2b.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
@@ -183,8 +183,16 @@ if files_ready:
                     st.dataframe(consolidated_pr_to_display(consolidated_pr), use_container_width=True, height=220)
             with c2:
                 if consolidated_gstr is not None:
-                    st.subheader("Consolidated GSTR-2A/2B")
-                    st.caption(gstr_summary_caption(consolidated_gstr))
+                    st.subheader("GSTR-2B (Sample Format)")
+                    st.caption(
+                        f"{len(consolidated_gstr)} invoices converted from GST portal format"
+                        + (
+                            f" — {gstr_summary_caption(consolidated_gstr)}"
+                            if "gstr_source" in consolidated_gstr.columns
+                            and consolidated_gstr["gstr_source"].nunique() > 1
+                            else ""
+                        )
+                    )
                     st.dataframe(consolidated_gstr_to_display(consolidated_gstr), use_container_width=True, height=220)
 
         st.subheader("Summary")
