@@ -109,6 +109,18 @@ KEYWORD_FALLBACKS: dict[str, tuple[str, ...]] = {
     "taxable_value": ("taxable", "invoice value"),
 }
 
+# Columns that indicate a non-GSTR file (payment register, PR export, etc.)
+NON_GSTR_COLUMN_HINTS = (
+    "payment type",
+    "balance due",
+    "received / paid",
+    "transaction type",
+    "payment status",
+    "received paid amount",
+    "total amount",
+    "description",
+)
+
 
 def _normalize_header(header: str) -> str:
     if header is None or (isinstance(header, float) and pd.isna(header)):
@@ -178,6 +190,35 @@ def _read_sheet_raw(path_or_buffer: Any, sheet_name: str | int) -> pd.DataFrame:
     return data
 
 
+def _looks_like_non_gstr_export(df: pd.DataFrame) -> bool:
+    columns_text = " ".join(_normalize_header(col) for col in df.columns)
+    hits = sum(1 for hint in NON_GSTR_COLUMN_HINTS if hint in columns_text)
+    has_tax_columns = any(
+        _score_header(col, FIELD_ALIASES[field]) >= 40 or _keyword_score(col, KEYWORD_FALLBACKS.get(field, ()))
+        for col in df.columns
+        for field in ("igst", "cgst", "sgst", "taxable_value")
+    )
+    return hits >= 2 and not has_tax_columns
+
+
+def _format_column_error(df: pd.DataFrame, missing: list[str]) -> str:
+    found = ", ".join(col for col in df.columns if col)[:500]
+    if _looks_like_non_gstr_export(df):
+        return (
+            f"Could not detect required columns: {', '.join(missing)}. "
+            "This file looks like a Payment Register or Purchase Register export, "
+            "not a GSTR-2A/2B download from the GST portal. "
+            f"Found columns: {found}. "
+            "Download GSTR-2B Excel from GST Portal: Services → Returns → GSTR-2B → Download Excel."
+        )
+    return (
+        f"Could not detect required columns: {', '.join(missing)}. "
+        f"Found columns: {found}. "
+        "Please ensure your file includes GSTIN, invoice number, date, and tax columns "
+        "(Taxable Value, IGST, CGST, SGST)."
+    )
+
+
 def map_columns(df: pd.DataFrame) -> dict[str, str]:
     mapping: dict[str, str] = {}
     used_columns: set[str] = set()
@@ -200,13 +241,7 @@ def map_columns(df: pd.DataFrame) -> dict[str, str]:
 
     missing = [field for field in REQUIRED_FIELDS if field not in mapping]
     if missing:
-        readable = ", ".join(missing)
-        found = ", ".join(df.columns[:15])
-        raise ValueError(
-            f"Could not detect required columns: {readable}. "
-            f"Found columns: {found}. "
-            "Please ensure your file includes GSTIN, invoice number, date, and tax columns."
-        )
+        raise ValueError(_format_column_error(df, missing))
     return mapping
 
 
@@ -223,7 +258,7 @@ def _is_gstr_data_sheet(sheet_name: str) -> bool:
     return any(keyword in lowered for keyword in GSTR_DATA_SHEET_KEYWORDS)
 
 
-def read_gstr_excel(path_or_buffer: Any) -> pd.DataFrame:
+def read_gstr_excel(path_or_buffer: Any, filename: str = "") -> pd.DataFrame:
     """Read GSTR-2A/2B Excel, including multi-sheet GST portal downloads."""
     if hasattr(path_or_buffer, "read"):
         data = path_or_buffer.read()
@@ -233,28 +268,42 @@ def read_gstr_excel(path_or_buffer: Any) -> pd.DataFrame:
 
     workbook = pd.ExcelFile(source)
     sheet_names = workbook.sheet_names
+    skip_sheets = {"summary", "readme", "read me", "help", "index", "cover"}
     data_sheets = [name for name in sheet_names if _is_gstr_data_sheet(name)]
+    candidate_sheets = data_sheets or [
+        name for name in sheet_names if not any(s in name.lower() for s in skip_sheets)
+    ]
 
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
+    non_gstr_detected = False
 
-    for sheet in data_sheets or sheet_names:
+    for sheet in candidate_sheets:
         try:
             if hasattr(source, "seek"):
                 source.seek(0)
             sheet_df = _read_sheet_raw(source, sheet)
+            if _looks_like_non_gstr_export(sheet_df):
+                non_gstr_detected = True
+                continue
             mapping = map_columns(sheet_df)
             frames.append(extract_standard_frame(sheet_df, mapping))
         except ValueError as exc:
-            errors.append(f"{sheet}: {exc}")
+            errors.append(f"sheet '{sheet}': {exc}")
             continue
 
     if frames:
         return pd.concat(frames, ignore_index=True)
 
+    prefix = f"File '{filename}': " if filename else ""
+    if non_gstr_detected and not errors:
+        raise ValueError(
+            f"{prefix}This file looks like a Payment Register or Purchase Register export, "
+            "not GSTR-2A/2B from the GST portal. "
+            "Remove it from GSTR upload and use only GST portal GSTR-2B Excel downloads."
+        )
     detail = errors[0] if errors else "No readable invoice sheet found."
     raise ValueError(
-        "Could not read GSTR-2A/2B Excel. "
-        f"{detail} "
-        "Try downloading the B2B table Excel from the GST portal."
+        f"{prefix}Could not read GSTR-2A/2B Excel. {detail} "
+        "Download from GST Portal: Services → Returns → GSTR-2B → Download Excel (B2B)."
     )

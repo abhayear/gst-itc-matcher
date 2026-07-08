@@ -72,16 +72,29 @@ def gstr_summary_caption(consolidated: pd.DataFrame) -> str:
     return " + ".join(parts) + " invoices"
 
 
-def _read_standard_register(source: Any, source_type: str, label_column: str, is_gstr: bool = False) -> pd.DataFrame:
-    if is_gstr:
-        raw = read_gstr_excel(source)
-        std = raw.copy()
-    else:
-        raw = read_excel_with_headers(source)
-        mapping = map_columns(raw)
-        std = extract_standard_frame(raw, mapping)
-    std[label_column] = source_type
-    return std
+def _read_standard_register(
+    source: Any,
+    source_type: str,
+    label_column: str,
+    is_gstr: bool = False,
+    filename: str = "",
+) -> pd.DataFrame:
+    try:
+        if is_gstr:
+            raw = read_gstr_excel(source, filename=filename)
+            std = raw.copy()
+        else:
+            raw = read_excel_with_headers(source)
+            mapping = map_columns(raw)
+            std = extract_standard_frame(raw, mapping)
+        std[label_column] = source_type
+        return std
+    except ValueError as exc:
+        label = filename or source_type
+        message = str(exc)
+        if message.startswith(f"File '{label}'"):
+            raise
+        raise ValueError(f"File '{label}': {message}") from exc
 
 
 def _consolidate_registers(
@@ -96,7 +109,16 @@ def _consolidate_registers(
     for source, source_type in sources:
         if hasattr(source, "seek"):
             source.seek(0)
-        frames.append(_read_standard_register(source, source_type, label_column, is_gstr=label_column == GSTR_LABEL_COLUMN))
+        filename = getattr(source, "name", "") or source_type
+        frames.append(
+            _read_standard_register(
+                source,
+                source_type,
+                label_column,
+                is_gstr=label_column == GSTR_LABEL_COLUMN,
+                filename=filename,
+            )
+        )
 
     return pd.concat(frames, ignore_index=True)
 

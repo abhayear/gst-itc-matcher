@@ -63,7 +63,11 @@ else:
 
 st.subheader("GSTR-2A / 2B")
 if gstr_mode == "Multiple periods (Consolidate)":
-    st.caption("Upload one Excel file per period (e.g. Apr-2025, May-2025, Jun-2025). Period is detected from file name.")
+    st.caption(
+        "Upload one GSTR-2B Excel per period from the **GST portal** "
+        "(e.g. 092025_GSTIN_GSTR2BQ_....xlsx). "
+        "Do not upload Payment Register or Tally/Busy exports here."
+    )
     gstr_period_files = st.file_uploader(
         "GSTR-2A/2B files (one per period)",
         type=["xlsx", "xls"],
