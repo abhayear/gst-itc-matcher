@@ -199,6 +199,66 @@ def main() -> None:
         ]
         pd.DataFrame(rows).to_excel(writer, sheet_name="B2B", index=False, header=False)
 
+    # Exact GST portal layout (B2B sheet with rows 1-6 headers, data from row 7)
+    portal_b2b_path = SAMPLES_DIR / "sample_gstr2b_gst_portal_b2b.xlsx"
+    with pd.ExcelWriter(portal_b2b_path, engine="openpyxl") as writer:
+        rows = [
+            ["", "", "", "", "", "", "", "", "", "", "", "", ""],
+            ["", "Goods and Services Tax", "", "", "", "", "", "", "", "", "", "", ""],
+            ["", "Government of India", "", "", "", "", "", "", "", "", "", "", ""],
+            ["", "", "Invoice details", "", "", "", "", "", "", "", "", "", ""],
+            [
+                "GSTIN of supplier",
+                "Trade/Legal name of the Supplier",
+                "Invoice number",
+                "Invoice type",
+                "Invoice Date",
+                "Invoice Value (₹)",
+                "Place of supply",
+                "Supply Attract Reverse Charge",
+                "Rate (%)",
+                "Taxable Value (₹)",
+                "Integrated Tax (₹)",
+                "Central Tax (₹)",
+                "State/UT Tax (₹)",
+            ],
+            ["", "", "", "", "", "", "", "", "", "", "", "", ""],
+            [
+                "09AAHCE2207M1ZJ",
+                "ELYF EVSPARE PRIVATE",
+                "UPND12627005110",
+                "Regular",
+                "25-06-2026",
+                11610,
+                "09-Uttar Pradesh",
+                "N",
+                18,
+                9839.38,
+                1771.08,
+                0,
+                0,
+            ],
+            ["", "", "", "", "", "", "", "", "-", "", "", "", ""],
+            ["", "", "", "", "", "", "", "", "", "", "", "", ""],
+            [
+                "09AAFCG9772A1Z5",
+                "GALLANT OIL AND LUBRICANTS",
+                "GOL/25-26/001",
+                "Regular",
+                "15-06-2026",
+                5000,
+                "09-Uttar Pradesh",
+                "N",
+                18,
+                4237.29,
+                762.71,
+                0,
+                0,
+            ],
+        ]
+        pd.DataFrame(rows).to_excel(writer, sheet_name="B2B", index=False, header=False)
+        pd.DataFrame([["Read me"]]).to_excel(writer, sheet_name="Read me", index=False, header=False)
+
     for path in (
         pr_path,
         sales_path,
@@ -210,6 +270,7 @@ def main() -> None:
         gstr_may_path,
         portal_path,
         messy_path,
+        portal_b2b_path,
     ):
         print(f"Created {path}")
 

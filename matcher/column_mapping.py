@@ -21,8 +21,8 @@ REQUIRED_FIELDS = (
 
 FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "gstin": (
-        "supplier gstin",
         "gstin of supplier",
+        "supplier gstin",
         "gstin/uin",
         "party gstin",
         "vendor gstin",
@@ -31,9 +31,10 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "gstin of supplier / isd",
     ),
     "supplier_name": (
-        "supplier name",
-        "trade/legal name",
+        "trade/legal name of the supplier",
         "trade/legal name of supplier",
+        "trade/legal name",
+        "supplier name",
         "legal name",
         "party name",
         "vendor name",
@@ -41,50 +42,49 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "supplier",
     ),
     "invoice_no": (
+        "invoice number",
         "invoice no",
         "invoice no.",
-        "invoice number",
+        "note number",
         "bill no",
         "bill no.",
         "document number",
         "inv no",
         "inv no.",
-        "note number",
         "debit note number",
+        "credit note number",
     ),
     "invoice_date": (
         "invoice date",
+        "note date",
         "bill date",
         "document date",
         "inv date",
-        "note date",
         "date",
     ),
     "taxable_value": (
         "taxable value",
         "taxable amount",
-        "invoice value",
         "total taxable value",
         "taxable val",
-        "value",
     ),
     "igst": (
-        "igst",
         "integrated tax",
+        "igst",
         "integrated tax amount",
         "igst amount",
     ),
     "cgst": (
-        "cgst",
         "central tax",
+        "cgst",
         "central tax amount",
         "cgst amount",
     ),
     "sgst": (
-        "sgst",
         "state/ut tax",
-        "state tax",
         "state/ ut tax",
+        "state tax",
+        "sgst",
         "sgst amount",
     ),
 }
@@ -101,11 +101,26 @@ GSTR_DATA_SHEET_KEYWORDS = (
     "isda",
 )
 
+GSTR_SKIP_SHEET_KEYWORDS = (
+    "read me",
+    "readme",
+    "summary",
+    "help",
+    "index",
+    "cover",
+    "instructions",
+    "eco",
+    "ecoa",
+    "tds",
+    "tdsa",
+    "tcs",
+)
+
 KEYWORD_FALLBACKS: dict[str, tuple[str, ...]] = {
     "igst": ("integrated", "igst"),
     "cgst": ("central", "cgst"),
     "sgst": ("state", "sgst", "ut tax"),
-    "taxable_value": ("taxable", "invoice value"),
+    "taxable_value": ("taxable value", "taxable"),
 }
 
 NON_GSTR_COLUMN_HINTS = (
@@ -120,24 +135,24 @@ NON_GSTR_COLUMN_HINTS = (
 )
 
 SECTION_ROW_HINTS = (
-    "document details",
     "supplier wise",
     "supplier-wise",
-    "invoice details",
     "table ",
     "gstr-2b",
     "gstr 2b",
     "gstr-2a",
     "tax period",
     "financial year",
-    "legal name",
     "grand total",
     "note:",
     "remarks",
     "all tables",
     "download excel",
-    "itc available",
+    "goods and services tax",
+    "government of india",
 )
+
+GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z0-9]{13}$")
 
 
 def _normalize_header(header: str) -> str:
@@ -196,25 +211,29 @@ def _score_header_row_cells(cells: list[str]) -> tuple[int, int]:
     return len(matched_fields), critical
 
 
-def _build_headers(row1: list[str], row2: list[str] | None = None) -> list[str]:
-    if not row2:
-        return row1
+def _build_headers(*rows: list[str]) -> list[str]:
+    if not rows:
+        return []
+    if len(rows) == 1:
+        return rows[0]
+
     headers: list[str] = []
     group = ""
-    max_len = max(len(row1), len(row2))
+    max_len = max(len(row) for row in rows)
     for idx in range(max_len):
-        part1 = row1[idx] if idx < len(row1) else ""
-        part2 = row2[idx] if idx < len(row2) else ""
-        if part2:
-            header = part2
-            if part1 and part1 not in part2:
-                header = f"{part1} {part2}".strip()
-            group = part1 or group
-        elif part1:
-            header = part1
-            group = part1
-        else:
-            header = group
+        parts = [row[idx] if idx < len(row) else "" for row in rows]
+        parts = [part for part in parts if part]
+        if not parts:
+            headers.append(_normalize_header(group))
+            continue
+        header = parts[-1]
+        if len(parts) > 1 and parts[0] not in header:
+            header = parts[-1]
+        group = parts[0] if len(parts) == 1 and parts[0] not in {
+            "invoice details",
+            "credit note/debit note details",
+            "credit note debit note details",
+        } else group
         headers.append(_normalize_header(header))
     return headers
 
@@ -232,6 +251,13 @@ def _is_section_or_title_row(row: pd.Series) -> bool:
     return False
 
 
+def _is_valid_gstin(value: Any) -> bool:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return False
+    text = re.sub(r"[^0-9A-Z]", "", str(value).strip().upper())
+    return bool(GSTIN_PATTERN.match(text))
+
+
 def _dedupe_headers(headers: list[str]) -> list[str]:
     seen: dict[str, int] = {}
     result: list[str] = []
@@ -243,12 +269,18 @@ def _dedupe_headers(headers: list[str]) -> list[str]:
     return result
 
 
-def _dataframe_from_header(raw: pd.DataFrame, header_row: int, two_row_header: bool = False) -> pd.DataFrame:
-    row1 = _row_cells(raw.iloc[header_row])
-    row2 = _row_cells(raw.iloc[header_row + 1]) if two_row_header else None
-    headers = _build_headers(row1, row2)
+def _filter_invoice_rows(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    gstin_col = mapping["gstin"]
+    mask = df[gstin_col].apply(_is_valid_gstin)
+    filtered = df[mask].copy().reset_index(drop=True)
+    return filtered
+
+
+def _dataframe_from_header(raw: pd.DataFrame, header_rows: list[int]) -> pd.DataFrame:
+    header_parts = [_row_cells(raw.iloc[row_idx]) for row_idx in header_rows]
+    headers = _build_headers(*header_parts)
     headers = _dedupe_headers(headers)
-    data_start = header_row + (2 if two_row_header else 1)
+    data_start = max(header_rows) + 1
     data = raw.iloc[data_start:].copy()
     if data.empty:
         return pd.DataFrame()
@@ -270,27 +302,39 @@ def _dataframe_from_header(raw: pd.DataFrame, header_row: int, two_row_header: b
     return data
 
 
+def _header_row_combinations(scan_limit: int) -> list[list[int]]:
+    combos: list[list[int]] = []
+    for start in range(scan_limit):
+        combos.append([start])
+        if start + 1 < scan_limit:
+            combos.append([start, start + 1])
+        if start + 2 < scan_limit:
+            combos.append([start, start + 1, start + 2])
+    return combos
+
+
 def _find_best_gstr_table(raw: pd.DataFrame) -> pd.DataFrame | None:
     best_df: pd.DataFrame | None = None
     best_key = (-1, -1, -1)
 
-    scan_limit = min(len(raw), 120)
-    for header_row in range(scan_limit):
-        for two_row in (False, True):
-            if two_row and header_row + 1 >= len(raw):
+    scan_limit = min(len(raw), 30)
+    for header_rows in _header_row_combinations(scan_limit):
+        candidate = _dataframe_from_header(raw, header_rows)
+        if candidate.empty:
+            continue
+        try:
+            mapping = map_columns(candidate)
+            filtered = _filter_invoice_rows(candidate, mapping)
+            if filtered.empty:
                 continue
-            candidate = _dataframe_from_header(raw, header_row, two_row_header=two_row)
-            if candidate.empty or len(candidate) < 1:
-                continue
-            try:
-                mapping = map_columns(candidate)
-            except ValueError:
-                continue
-            field_count, critical = _score_header_row_cells(list(candidate.columns))
-            key = (critical, field_count, len(candidate))
-            if key > best_key:
-                best_key = key
-                best_df = extract_standard_frame(candidate, mapping)
+            std = extract_standard_frame(filtered, mapping)
+        except ValueError:
+            continue
+        field_count, critical = _score_header_row_cells(list(candidate.columns))
+        key = (critical, field_count, len(std))
+        if key > best_key:
+            best_key = key
+            best_df = std
 
     return best_df
 
@@ -314,11 +358,12 @@ def _read_sheet_raw(path_or_buffer: Any, sheet_name: str | int) -> pd.DataFrame:
         return best
 
     header_row = detect_header_row(raw)
-    candidate = _dataframe_from_header(raw, header_row, two_row_header=False)
+    candidate = _dataframe_from_header(raw, [header_row])
     if candidate.empty:
         return candidate
     mapping = map_columns(candidate)
-    return extract_standard_frame(candidate, mapping)
+    filtered = _filter_invoice_rows(candidate, mapping)
+    return extract_standard_frame(filtered, mapping)
 
 
 def _looks_like_non_gstr_export(df: pd.DataFrame) -> bool:
@@ -364,6 +409,8 @@ def map_columns(df: pd.DataFrame) -> dict[str, str]:
             score = _score_header(col, FIELD_ALIASES[field])
             if field in KEYWORD_FALLBACKS:
                 score = max(score, _keyword_score(col, KEYWORD_FALLBACKS[field]))
+            if field == "taxable_value" and "invoice value" in _normalize_header(col):
+                score = max(score - 30, 0)
             if score > best_score:
                 best_score = score
                 best_col = col
@@ -387,6 +434,8 @@ def read_excel_with_headers(path_or_buffer: Any, sheet_name: str | int = 0) -> p
 
 def _is_gstr_data_sheet(sheet_name: str) -> bool:
     lowered = sheet_name.lower().replace(" ", "").replace("-", "")
+    if any(skip in lowered for skip in GSTR_SKIP_SHEET_KEYWORDS):
+        return False
     return any(keyword in lowered for keyword in GSTR_DATA_SHEET_KEYWORDS)
 
 
@@ -400,17 +449,13 @@ def read_gstr_excel(path_or_buffer: Any, filename: str = "") -> pd.DataFrame:
 
     workbook = pd.ExcelFile(source)
     sheet_names = workbook.sheet_names
-    skip_sheets = {"summary", "readme", "read me", "help", "index", "cover", "instructions"}
     data_sheets = [name for name in sheet_names if _is_gstr_data_sheet(name)]
-    candidate_sheets = data_sheets or [
-        name for name in sheet_names if not any(s in name.lower() for s in skip_sheets)
-    ]
 
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
     non_gstr_detected = False
 
-    for sheet in candidate_sheets:
+    for sheet in data_sheets:
         try:
             if hasattr(source, "seek"):
                 source.seek(0)
@@ -435,8 +480,8 @@ def read_gstr_excel(path_or_buffer: Any, filename: str = "") -> pd.DataFrame:
             "not GSTR-2A/2B from the GST portal. "
             "Remove it from GSTR upload and use only GST portal GSTR-2B Excel downloads."
         )
-    detail = errors[0] if errors else "No readable invoice sheet found."
+    detail = errors[0] if errors else "No readable invoice rows found in B2B/B2BA/CDNR sheets."
     raise ValueError(
         f"{prefix}Could not read GSTR-2A/2B Excel. {detail} "
-        "Download from GST Portal: Services → Returns → GSTR-2B → Download Excel (B2B)."
+        "Use the GST portal download with B2B, B2BA, and CDNR sheets."
     )
