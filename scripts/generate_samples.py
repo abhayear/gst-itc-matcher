@@ -162,6 +162,43 @@ def main() -> None:
         portal_df = pd.DataFrame(portal_rows, columns=portal_headers)
         portal_df.to_excel(writer, sheet_name="B2B", index=False, startrow=4)
 
+    # Realistic GST portal file with many headings and two-row tax header
+    messy_path = SAMPLES_DIR / "sample_gstr2b_many_headings.xlsx"
+    with pd.ExcelWriter(messy_path, engine="openpyxl") as writer:
+        rows = [
+            ["GSTR-2B", "", "", "", "", "", "", ""],
+            ["Tax Period: 09-2025", "", "", "", "", "", "", ""],
+            ["GSTIN: 09AAMFE1697H1ZZ", "", "", "", "", "", "", ""],
+            ["", "", "", "", "", "", "", ""],
+            ["Document Details", "", "", "", "", "", "", ""],
+            ["Supplier wise details", "", "", "", "", "", "", ""],
+            [
+                "GSTIN of supplier",
+                "Trade/Legal name",
+                "Invoice number",
+                "Invoice date",
+                "Taxable Value (₹)",
+                "Integrated Tax (₹)",
+                "Central Tax (₹)",
+                "State/UT Tax (₹)",
+            ],
+            ["27AABCU9603R1ZM", "ABC TRADERS PVT LTD", "INV-1001", "05-04-2025", 100000, 0, 9000, 9000],
+            ["29AACCT1234M1Z5", "XYZ SUPPLIES", "XYZ/2025/42", "10-04-2025", 50000, 8500, 0, 0],
+            ["Document Details", "", "", "", "", "", "", ""],
+            [
+                "GSTIN of supplier",
+                "Trade/Legal name",
+                "Invoice number",
+                "Invoice date",
+                "Taxable Value (₹)",
+                "Integrated Tax (₹)",
+                "Central Tax (₹)",
+                "State/UT Tax (₹)",
+            ],
+            ["27AABCU9603R1ZM", "ABC TRADERS PVT LTD", "INV-1002", "12-04-2025", 25000, 0, 2250, 2250],
+        ]
+        pd.DataFrame(rows).to_excel(writer, sheet_name="B2B", index=False, header=False)
+
     for path in (
         pr_path,
         sales_path,
@@ -172,6 +209,7 @@ def main() -> None:
         gstr_apr_path,
         gstr_may_path,
         portal_path,
+        messy_path,
     ):
         print(f"Created {path}")
 

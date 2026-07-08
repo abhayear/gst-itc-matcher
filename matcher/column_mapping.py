@@ -89,7 +89,6 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# GST portal GSTR-2B / GSTR-2A invoice sheets
 GSTR_DATA_SHEET_KEYWORDS = (
     "b2b",
     "b2ba",
@@ -109,7 +108,6 @@ KEYWORD_FALLBACKS: dict[str, tuple[str, ...]] = {
     "taxable_value": ("taxable", "invoice value"),
 }
 
-# Columns that indicate a non-GSTR file (payment register, PR export, etc.)
 NON_GSTR_COLUMN_HINTS = (
     "payment type",
     "balance due",
@@ -119,6 +117,26 @@ NON_GSTR_COLUMN_HINTS = (
     "received paid amount",
     "total amount",
     "description",
+)
+
+SECTION_ROW_HINTS = (
+    "document details",
+    "supplier wise",
+    "supplier-wise",
+    "invoice details",
+    "table ",
+    "gstr-2b",
+    "gstr 2b",
+    "gstr-2a",
+    "tax period",
+    "financial year",
+    "legal name",
+    "grand total",
+    "note:",
+    "remarks",
+    "all tables",
+    "download excel",
+    "itc available",
 )
 
 
@@ -155,46 +173,160 @@ def _keyword_score(header: str, keywords: Iterable[str]) -> int:
     return hits * 40
 
 
-def detect_header_row(df: pd.DataFrame, max_rows: int = 20) -> int:
+def _row_cells(row: pd.Series) -> list[str]:
+    return [_normalize_header(cell) for cell in row.tolist()]
+
+
+def _score_header_row_cells(cells: list[str]) -> tuple[int, int]:
+    matched_fields: set[str] = set()
+    for cell in cells:
+        if not cell:
+            continue
+        for field, aliases in FIELD_ALIASES.items():
+            score = _score_header(cell, aliases)
+            if score >= 60:
+                matched_fields.add(field)
+            elif field in KEYWORD_FALLBACKS and _keyword_score(cell, KEYWORD_FALLBACKS[field]) >= 40:
+                matched_fields.add(field)
+    critical = int(
+        "gstin" in matched_fields
+        and "invoice_no" in matched_fields
+        and bool({"igst", "cgst", "sgst", "taxable_value"} & matched_fields)
+    )
+    return len(matched_fields), critical
+
+
+def _build_headers(row1: list[str], row2: list[str] | None = None) -> list[str]:
+    if not row2:
+        return row1
+    headers: list[str] = []
+    group = ""
+    max_len = max(len(row1), len(row2))
+    for idx in range(max_len):
+        part1 = row1[idx] if idx < len(row1) else ""
+        part2 = row2[idx] if idx < len(row2) else ""
+        if part2:
+            header = part2
+            if part1 and part1 not in part2:
+                header = f"{part1} {part2}".strip()
+            group = part1 or group
+        elif part1:
+            header = part1
+            group = part1
+        else:
+            header = group
+        headers.append(_normalize_header(header))
+    return headers
+
+
+def _is_section_or_title_row(row: pd.Series) -> bool:
+    cells = [str(v).strip() for v in row.tolist() if pd.notna(v) and str(v).strip()]
+    if not cells:
+        return True
+    if len(cells) <= 3:
+        text = _normalize_header(" ".join(cells))
+        if any(hint in text for hint in SECTION_ROW_HINTS):
+            return True
+        if text.startswith("total") or text.startswith("grand total"):
+            return True
+    return False
+
+
+def _dedupe_headers(headers: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    result: list[str] = []
+    for header in headers:
+        base = header or "column"
+        count = seen.get(base, 0)
+        seen[base] = count + 1
+        result.append(base if count == 0 else f"{base}_{count + 1}")
+    return result
+
+
+def _dataframe_from_header(raw: pd.DataFrame, header_row: int, two_row_header: bool = False) -> pd.DataFrame:
+    row1 = _row_cells(raw.iloc[header_row])
+    row2 = _row_cells(raw.iloc[header_row + 1]) if two_row_header else None
+    headers = _build_headers(row1, row2)
+    headers = _dedupe_headers(headers)
+    data_start = header_row + (2 if two_row_header else 1)
+    data = raw.iloc[data_start:].copy()
+    if data.empty:
+        return pd.DataFrame()
+
+    width = min(len(headers), data.shape[1])
+    data = data.iloc[:, :width]
+    data.columns = headers[:width]
+    data = data.dropna(how="all").reset_index(drop=True)
+
+    keep_rows = [idx for idx, row in data.iterrows() if not _is_section_or_title_row(row)]
+    if keep_rows:
+        data = data.iloc[keep_rows].reset_index(drop=True)
+
+    if not data.empty:
+        first_cell = _normalize_header(data.iloc[0].iloc[0])
+        if _score_header(first_cell, FIELD_ALIASES["gstin"]) >= 60:
+            data = data.iloc[1:].reset_index(drop=True)
+
+    return data
+
+
+def _find_best_gstr_table(raw: pd.DataFrame) -> pd.DataFrame | None:
+    best_df: pd.DataFrame | None = None
+    best_key = (-1, -1, -1)
+
+    scan_limit = min(len(raw), 120)
+    for header_row in range(scan_limit):
+        for two_row in (False, True):
+            if two_row and header_row + 1 >= len(raw):
+                continue
+            candidate = _dataframe_from_header(raw, header_row, two_row_header=two_row)
+            if candidate.empty or len(candidate) < 1:
+                continue
+            try:
+                mapping = map_columns(candidate)
+            except ValueError:
+                continue
+            field_count, critical = _score_header_row_cells(list(candidate.columns))
+            key = (critical, field_count, len(candidate))
+            if key > best_key:
+                best_key = key
+                best_df = extract_standard_frame(candidate, mapping)
+
+    return best_df
+
+
+def detect_header_row(df: pd.DataFrame, max_rows: int = 30) -> int:
     best_row = 0
-    best_score = -1
+    best_key = (-1, -1)
     limit = min(max_rows, len(df))
     for row_idx in range(limit):
-        row = df.iloc[row_idx]
-        score = 0
-        for cell in row:
-            cell_text = _normalize_header(cell)
-            if not cell_text:
-                continue
-            for aliases in FIELD_ALIASES.values():
-                if _score_header(cell_text, aliases) >= 60:
-                    score += 1
-        if score > best_score:
-            best_score = score
+        score = _score_header_row_cells(_row_cells(df.iloc[row_idx]))
+        if score > best_key:
+            best_key = score
             best_row = row_idx
     return best_row
 
 
 def _read_sheet_raw(path_or_buffer: Any, sheet_name: str | int) -> pd.DataFrame:
     raw = pd.read_excel(path_or_buffer, sheet_name=sheet_name, header=None, dtype=object)
+    best = _find_best_gstr_table(raw)
+    if best is not None and not best.empty:
+        return best
+
     header_row = detect_header_row(raw)
-    headers = [_normalize_header(col) for col in raw.iloc[header_row].tolist()]
-    data = raw.iloc[header_row + 1 :].copy()
-    data.columns = headers
-    data = data.dropna(how="all").reset_index(drop=True)
-    # Drop rows that repeat header labels
-    if not data.empty:
-        first_cell = _normalize_header(data.iloc[0].get(headers[0], ""))
-        if first_cell in FIELD_ALIASES["gstin"]:
-            data = data.iloc[1:].reset_index(drop=True)
-    return data
+    candidate = _dataframe_from_header(raw, header_row, two_row_header=False)
+    if candidate.empty:
+        return candidate
+    mapping = map_columns(candidate)
+    return extract_standard_frame(candidate, mapping)
 
 
 def _looks_like_non_gstr_export(df: pd.DataFrame) -> bool:
     columns_text = " ".join(_normalize_header(col) for col in df.columns)
     hits = sum(1 for hint in NON_GSTR_COLUMN_HINTS if hint in columns_text)
     has_tax_columns = any(
-        _score_header(col, FIELD_ALIASES[field]) >= 40 or _keyword_score(col, KEYWORD_FALLBACKS.get(field, ()))
+        _score_header(col, FIELD_ALIASES[field]) >= 40
+        or _keyword_score(col, KEYWORD_FALLBACKS.get(field, ()))
         for col in df.columns
         for field in ("igst", "cgst", "sgst", "taxable_value")
     )
@@ -268,7 +400,7 @@ def read_gstr_excel(path_or_buffer: Any, filename: str = "") -> pd.DataFrame:
 
     workbook = pd.ExcelFile(source)
     sheet_names = workbook.sheet_names
-    skip_sheets = {"summary", "readme", "read me", "help", "index", "cover"}
+    skip_sheets = {"summary", "readme", "read me", "help", "index", "cover", "instructions"}
     data_sheets = [name for name in sheet_names if _is_gstr_data_sheet(name)]
     candidate_sheets = data_sheets or [
         name for name in sheet_names if not any(s in name.lower() for s in skip_sheets)
@@ -283,11 +415,12 @@ def read_gstr_excel(path_or_buffer: Any, filename: str = "") -> pd.DataFrame:
             if hasattr(source, "seek"):
                 source.seek(0)
             sheet_df = _read_sheet_raw(source, sheet)
+            if sheet_df.empty:
+                continue
             if _looks_like_non_gstr_export(sheet_df):
                 non_gstr_detected = True
                 continue
-            mapping = map_columns(sheet_df)
-            frames.append(extract_standard_frame(sheet_df, mapping))
+            frames.append(sheet_df)
         except ValueError as exc:
             errors.append(f"sheet '{sheet}': {exc}")
             continue
