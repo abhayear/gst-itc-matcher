@@ -117,20 +117,29 @@ def main() -> None:
         ]
     )
 
+    sales_gstr = gstr_2b.iloc[:2].copy()
+    service_gstr = gstr_2b.iloc[2:].copy()
+
     pr_path = SAMPLES_DIR / "sample_purchase_register.xlsx"
     sales_path = SAMPLES_DIR / "sample_sales_purchase_register.xlsx"
     service_path = SAMPLES_DIR / "sample_service_purchase_register.xlsx"
     gstr_path = SAMPLES_DIR / "sample_gstr2b.xlsx"
+    sales_gstr_path = SAMPLES_DIR / "sample_sales_gstr2b.xlsx"
+    service_gstr_path = SAMPLES_DIR / "sample_service_gstr2b.xlsx"
 
     purchase_register.to_excel(pr_path, index=False)
     sales_register.to_excel(sales_path, index=False)
     service_register.to_excel(service_path, index=False)
     gstr_2b.to_excel(gstr_path, index=False)
+    sales_gstr.to_excel(sales_gstr_path, index=False)
+    service_gstr.to_excel(service_gstr_path, index=False)
 
     print(f"Created {pr_path}")
     print(f"Created {sales_path}")
     print(f"Created {service_path}")
     print(f"Created {gstr_path}")
+    print(f"Created {sales_gstr_path}")
+    print(f"Created {service_gstr_path}")
 
 
 if __name__ == "__main__":
