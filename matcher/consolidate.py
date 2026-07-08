@@ -30,24 +30,34 @@ GSTR_LABEL_OUTPUT = "Period"
 
 def label_from_filename(filename: str) -> str:
     """Derive a period label from an uploaded file name."""
-    stem = Path(filename).stem.replace("_", " ").replace("-", " ").strip()
+    stem = Path(filename).stem
+    parts = re.split(r"[_\-\s]+", stem)
+
+    # GST portal format: 032026_09GSTIN_GSTR2BQ_08072026.xlsx -> 03-2026
+    if parts and re.fullmatch(r"\d{6}", parts[0]):
+        mm, yyyy = parts[0][:2], parts[0][2:]
+        if 1 <= int(mm) <= 12:
+            return f"{mm}-{yyyy}"
+
+    normalized = stem.replace("_", " ").replace("-", " ").strip()
     patterns = (
-        r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s-]*(\d{4})\b",
-        r"\b(\d{1,2})[\s-/](\d{4})\b",
-        r"\b(\d{4})[\s-/](\d{1,2})\b",
+        r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s\-]*(\d{4})\b",
+        r"\b(\d{1,2})[\s/\-](\d{4})\b",
+        r"\b(\d{4})[\s/\-](\d{1,2})\b",
         r"\b((?:19|20)\d{2})\b",
     )
-    lowered = stem.lower()
+    lowered = normalized.lower()
     for pattern in patterns:
         match = re.search(pattern, lowered, re.I)
         if match:
-            parts = [part for part in match.groups() if part]
-            if len(parts) == 2 and parts[0].isdigit() and len(parts[0]) <= 2:
-                return f"{parts[0].zfill(2)}-{parts[1]}"
-            if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) <= 2:
-                return f"{parts[1].zfill(2)}-{parts[0]}"
-            return "-".join(parts).title()
-    cleaned = re.sub(r"\bgstr[\s-]*2[ab]?\b", "", stem, flags=re.I).strip()
+            groups = [part for part in match.groups() if part]
+            if len(groups) == 2 and groups[0].isdigit() and len(groups[0]) <= 2:
+                return f"{groups[0].zfill(2)}-{groups[1]}"
+            if len(groups) == 2 and groups[1].isdigit() and len(groups[1]) <= 2:
+                return f"{groups[1].zfill(2)}-{groups[0]}"
+            return "-".join(groups).title()
+
+    cleaned = re.sub(r"\bgstr[\s\-]*2[ab]?[\s\-]*q?\b", "", normalized, flags=re.I).strip()
     return cleaned or stem
 
 
