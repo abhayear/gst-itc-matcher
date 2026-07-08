@@ -20,12 +20,21 @@ streamlit run app.py
 
 Or double-click **`start.bat`** on Windows.
 
-### Usage (2 steps only)
+### Usage
 
-1. **Upload** Purchase Register Excel
-2. **Upload** GSTR-2A/2B Excel
+**Option A — Single Purchase Register**
+1. Select **Single file**
+2. Upload Purchase Register + GSTR-2A/2B
 
-Matching runs **automatically**. Download the ITC Taken Excel when ready.
+**Option B — Sales + Service (Consolidated)**
+1. Select **Sales + Service (Consolidate)**
+2. Upload Sales Purchase Register
+3. Upload Service Purchase Register
+4. Upload GSTR-2A/2B
+
+The app automatically merges Sales + Service into one consolidated Purchase Register, then matches with GSTR-2A/2B. Download both:
+- **Consolidated Purchase Register**
+- **ITC Taken Excel**
 
 ## Match Logic
 

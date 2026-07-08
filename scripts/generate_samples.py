@@ -10,7 +10,7 @@ SAMPLES_DIR = Path(__file__).resolve().parent.parent / "samples"
 def main() -> None:
     SAMPLES_DIR.mkdir(exist_ok=True)
 
-    purchase_register = pd.DataFrame(
+    sales_register = pd.DataFrame(
         [
             {
                 "Supplier GSTIN": "27AABCU9603R1ZM",
@@ -35,6 +35,21 @@ def main() -> None:
             {
                 "Supplier GSTIN": "27AABCU9603R1ZM",
                 "Supplier Name": "ABC Traders Pvt Ltd",
+                "Invoice No.": "INV-1001",
+                "Invoice Date": "2025-04-05",
+                "Taxable Value": 100000,
+                "IGST": 0,
+                "CGST": 9000,
+                "SGST": 9000,
+            },
+        ]
+    )
+
+    service_register = pd.DataFrame(
+        [
+            {
+                "Supplier GSTIN": "27AABCU9603R1ZM",
+                "Supplier Name": "ABC Traders Pvt Ltd",
                 "Invoice No.": "INV-1002",
                 "Invoice Date": "2025-04-12",
                 "Taxable Value": 25000,
@@ -52,18 +67,10 @@ def main() -> None:
                 "CGST": 2700,
                 "SGST": 2700,
             },
-            {
-                "Supplier GSTIN": "27AABCU9603R1ZM",
-                "Supplier Name": "ABC Traders Pvt Ltd",
-                "Invoice No.": "INV-1001",
-                "Invoice Date": "2025-04-05",
-                "Taxable Value": 100000,
-                "IGST": 0,
-                "CGST": 9000,
-                "SGST": 9000,
-            },
         ]
     )
+
+    purchase_register = pd.concat([sales_register, service_register], ignore_index=True)
 
     gstr_2b = pd.DataFrame(
         [
@@ -111,12 +118,18 @@ def main() -> None:
     )
 
     pr_path = SAMPLES_DIR / "sample_purchase_register.xlsx"
+    sales_path = SAMPLES_DIR / "sample_sales_purchase_register.xlsx"
+    service_path = SAMPLES_DIR / "sample_service_purchase_register.xlsx"
     gstr_path = SAMPLES_DIR / "sample_gstr2b.xlsx"
 
     purchase_register.to_excel(pr_path, index=False)
+    sales_register.to_excel(sales_path, index=False)
+    service_register.to_excel(service_path, index=False)
     gstr_2b.to_excel(gstr_path, index=False)
 
     print(f"Created {pr_path}")
+    print(f"Created {sales_path}")
+    print(f"Created {service_path}")
     print(f"Created {gstr_path}")
 
 

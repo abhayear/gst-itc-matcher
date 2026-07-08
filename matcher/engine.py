@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 
 from .column_mapping import extract_standard_frame, map_columns, read_excel_with_headers
+from .consolidate import consolidate_purchase_registers
 from .normalize import (
     amounts_equal,
     normalize_amount,
@@ -290,6 +291,19 @@ def load_and_match(
     gstr_std = extract_standard_frame(gstr_raw, gstr_mapped)
 
     return match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
+
+
+def load_and_match_consolidated(
+    purchase_sources: list[tuple[Any, str]],
+    gstr_file: Any,
+    tax_tolerance: float = 1.0,
+) -> tuple[pd.DataFrame, pd.DataFrame, MatchSummary]:
+    pr_std = consolidate_purchase_registers(purchase_sources)
+    gstr_raw = read_excel_with_headers(gstr_file)
+    gstr_mapped = map_columns(gstr_raw)
+    gstr_std = extract_standard_frame(gstr_raw, gstr_mapped)
+    result, summary = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
+    return pr_std, result, summary
 
 
 def export_to_excel(result: pd.DataFrame, summary: MatchSummary) -> bytes:
