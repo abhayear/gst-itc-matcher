@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Ensure project root is on path for Streamlit Cloud
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="GST ITC Matcher", page_icon="📊", layout="wide")
+st.set_page_config(page_title="GST ITC Matcher", page_icon=":bar_chart:", layout="wide")
 
 try:
     from matcher.consolidate import (
