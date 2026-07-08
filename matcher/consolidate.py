@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -21,9 +23,38 @@ FIELD_TO_OUTPUT = {
 }
 
 PR_LABEL_COLUMN = "register_type"
-GSTR_LABEL_COLUMN = "gstr_type"
+GSTR_LABEL_COLUMN = "gstr_source"
 PR_LABEL_OUTPUT = "Register Type"
-GSTR_LABEL_OUTPUT = "GSTR Type"
+GSTR_LABEL_OUTPUT = "Period"
+
+
+def label_from_filename(filename: str) -> str:
+    """Derive a period label from an uploaded file name."""
+    stem = Path(filename).stem.replace("_", " ").replace("-", " ").strip()
+    patterns = (
+        r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s-]*(\d{4})\b",
+        r"\b(\d{1,2})[\s-/](\d{4})\b",
+        r"\b(\d{4})[\s-/](\d{1,2})\b",
+        r"\b((?:19|20)\d{2})\b",
+    )
+    lowered = stem.lower()
+    for pattern in patterns:
+        match = re.search(pattern, lowered, re.I)
+        if match:
+            parts = [part for part in match.groups() if part]
+            if len(parts) == 2 and parts[0].isdigit() and len(parts[0]) <= 2:
+                return f"{parts[0].zfill(2)}-{parts[1]}"
+            if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) <= 2:
+                return f"{parts[1].zfill(2)}-{parts[0]}"
+            return "-".join(parts).title()
+    cleaned = re.sub(r"\bgstr[\s-]*2[ab]?\b", "", stem, flags=re.I).strip()
+    return cleaned or stem
+
+
+def gstr_summary_caption(consolidated: pd.DataFrame) -> str:
+    counts = consolidated[GSTR_LABEL_COLUMN].value_counts()
+    parts = [f"{count} from {period}" for period, count in counts.items()]
+    return " + ".join(parts) + " invoices"
 
 
 def _read_standard_register(source: Any, source_type: str, label_column: str) -> pd.DataFrame:

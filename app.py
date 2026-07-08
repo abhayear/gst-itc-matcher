@@ -10,83 +10,105 @@ from matcher.consolidate import (
     consolidated_pr_to_display,
     export_consolidated_gstr,
     export_consolidated_purchase_register,
+    gstr_summary_caption,
+    label_from_filename,
 )
-from matcher.engine import (
-    export_to_excel,
-    load_and_match,
-    load_and_match_fully_consolidated,
-)
+from matcher.engine import export_to_excel, load_and_match_with_consolidation
 
 st.set_page_config(page_title="GST ITC Matcher", page_icon="📊", layout="wide")
 
 st.title("GST ITC Matcher")
 st.caption("Upload Purchase Register(s) and GSTR-2A/2B — consolidation and matching run automatically.")
 
-pr_mode = st.radio(
-    "Register type",
-    options=["Single file", "Sales + Service (Consolidate)"],
-    horizontal=True,
-)
+col_pr, col_gstr = st.columns(2)
+with col_pr:
+    pr_mode = st.radio(
+        "Purchase Register",
+        options=["Single file", "Sales + Service (Consolidate)"],
+        horizontal=True,
+    )
+with col_gstr:
+    gstr_mode = st.radio(
+        "GSTR-2A / 2B",
+        options=["Single file", "Multiple periods (Consolidate)"],
+        horizontal=True,
+    )
 
 sales_pr = service_pr = pr_file = None
-sales_gstr = service_gstr = gstr_file = None
+gstr_file = None
+gstr_period_files: list = []
 
+st.subheader("Purchase Register")
 if pr_mode == "Sales + Service (Consolidate)":
-    st.info("Upload separate Sales and Service files for both Purchase Register and GSTR-2A/2B.")
-
-    st.subheader("Purchase Register")
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         sales_pr = st.file_uploader("Sales Purchase Register", type=["xlsx", "xls"], key="sales_pr")
-    with col2:
+    with c2:
         service_pr = st.file_uploader("Service Purchase Register", type=["xlsx", "xls"], key="service_pr")
-
-    st.subheader("GSTR-2A / 2B")
-    col3, col4 = st.columns(2)
-    with col3:
-        sales_gstr = st.file_uploader("Sales GSTR-2A/2B", type=["xlsx", "xls"], key="sales_gstr")
-    with col4:
-        service_gstr = st.file_uploader("Service GSTR-2A/2B", type=["xlsx", "xls"], key="service_gstr")
 else:
-    col1, col2 = st.columns(2)
-    with col1:
-        pr_file = st.file_uploader("1. Purchase Register (Excel)", type=["xlsx", "xls"], key="pr")
-    with col2:
-        gstr_file = st.file_uploader("2. GSTR-2A / GSTR-2B (Excel)", type=["xlsx", "xls"], key="gstr")
+    pr_file = st.file_uploader("Purchase Register (Excel)", type=["xlsx", "xls"], key="pr")
 
-if pr_mode == "Sales + Service (Consolidate)":
-    files_ready = sales_pr and service_pr and sales_gstr and service_gstr
+st.subheader("GSTR-2A / 2B")
+if gstr_mode == "Multiple periods (Consolidate)":
+    st.caption("Upload one Excel file per period (e.g. Apr-2025, May-2025, Jun-2025). Period is detected from file name.")
+    gstr_period_files = st.file_uploader(
+        "GSTR-2A/2B files (one per period)",
+        type=["xlsx", "xls"],
+        accept_multiple_files=True,
+        key="gstr_periods",
+    ) or []
 else:
-    files_ready = pr_file and gstr_file
+    gstr_file = st.file_uploader("GSTR-2A / 2B (Excel)", type=["xlsx", "xls"], key="gstr")
+
+pr_ready = (sales_pr and service_pr) if pr_mode == "Sales + Service (Consolidate)" else bool(pr_file)
+gstr_ready = len(gstr_period_files) >= 1 if gstr_mode == "Multiple periods (Consolidate)" else bool(gstr_file)
+files_ready = pr_ready and gstr_ready
+
+
+def _build_file_key() -> str:
+    parts = [pr_mode, gstr_mode]
+    if pr_mode == "Sales + Service (Consolidate)":
+        parts.extend([sales_pr.name, str(sales_pr.size), service_pr.name, str(service_pr.size)])
+    else:
+        parts.extend([pr_file.name, str(pr_file.size)])
+    if gstr_mode == "Multiple periods (Consolidate)":
+        for uploaded in gstr_period_files:
+            parts.extend([uploaded.name, str(uploaded.size)])
+    else:
+        parts.extend([gstr_file.name, str(gstr_file.size)])
+    return "|".join(parts)
+
+
+def _build_sources() -> tuple[list, list]:
+    if pr_mode == "Sales + Service (Consolidate)":
+        purchase_sources = [(sales_pr, "Sales"), (service_pr, "Service")]
+    else:
+        purchase_sources = [(pr_file, "Purchase Register")]
+
+    if gstr_mode == "Multiple periods (Consolidate)":
+        gstr_sources = [(f, label_from_filename(f.name)) for f in gstr_period_files]
+    else:
+        gstr_sources = [(gstr_file, "GSTR")]
+
+    return purchase_sources, gstr_sources
+
 
 if files_ready:
-    if pr_mode == "Sales + Service (Consolidate)":
-        file_key = (
-            f"{sales_pr.name}|{sales_pr.size}|{service_pr.name}|{service_pr.size}|"
-            f"{sales_gstr.name}|{sales_gstr.size}|{service_gstr.name}|{service_gstr.size}|{pr_mode}"
-        )
-    else:
-        file_key = f"{pr_file.name}|{pr_file.size}|{gstr_file.name}|{gstr_file.size}|{pr_mode}"
+    file_key = _build_file_key()
 
     if st.session_state.get("last_file_key") != file_key:
         with st.spinner("Consolidating registers and matching invoices..."):
             try:
-                if pr_mode == "Sales + Service (Consolidate)":
-                    for f in (sales_pr, service_pr, sales_gstr, service_gstr):
-                        f.seek(0)
-                    consolidated_pr, consolidated_gstr, result, summary = load_and_match_fully_consolidated(
-                        [(sales_pr, "Sales"), (service_pr, "Service")],
-                        [(sales_gstr, "Sales"), (service_gstr, "Service")],
-                    )
-                    st.session_state["consolidated_pr"] = consolidated_pr
-                    st.session_state["consolidated_gstr"] = consolidated_gstr
-                else:
-                    pr_file.seek(0)
-                    gstr_file.seek(0)
-                    result, summary = load_and_match(pr_file, gstr_file)
-                    st.session_state.pop("consolidated_pr", None)
-                    st.session_state.pop("consolidated_gstr", None)
+                purchase_sources, gstr_sources = _build_sources()
+                for source, _ in purchase_sources + gstr_sources:
+                    source.seek(0)
 
+                consolidated_pr, consolidated_gstr, result, summary = load_and_match_with_consolidation(
+                    purchase_sources,
+                    gstr_sources,
+                )
+                st.session_state["consolidated_pr"] = consolidated_pr
+                st.session_state["consolidated_gstr"] = consolidated_gstr
                 st.session_state["match_result"] = result
                 st.session_state["match_summary"] = summary
                 st.session_state["last_file_key"] = file_key
@@ -112,7 +134,7 @@ if files_ready:
                 use_container_width=True,
             )
         with d2:
-            if "consolidated_pr" in st.session_state:
+            if st.session_state.get("consolidated_pr") is not None:
                 st.download_button(
                     label="Download Consolidated Purchase Register",
                     data=export_consolidated_purchase_register(st.session_state["consolidated_pr"]),
@@ -121,7 +143,7 @@ if files_ready:
                     use_container_width=True,
                 )
         with d3:
-            if "consolidated_gstr" in st.session_state:
+            if st.session_state.get("consolidated_gstr") is not None:
                 st.download_button(
                     label="Download Consolidated GSTR-2A/2B",
                     data=export_consolidated_gstr(st.session_state["consolidated_gstr"]),
@@ -130,25 +152,23 @@ if files_ready:
                     use_container_width=True,
                 )
 
-        if "consolidated_pr" in st.session_state:
-            consolidated_pr = st.session_state["consolidated_pr"]
-            consolidated_gstr = st.session_state["consolidated_gstr"]
-
+        consolidated_pr = st.session_state.get("consolidated_pr")
+        consolidated_gstr = st.session_state.get("consolidated_gstr")
+        if consolidated_pr is not None or consolidated_gstr is not None:
             c1, c2 = st.columns(2)
             with c1:
-                st.subheader("Consolidated Purchase Register")
-                st.caption(
-                    f"{len(consolidated_pr[consolidated_pr['register_type'] == 'Sales'])} Sales + "
-                    f"{len(consolidated_pr[consolidated_pr['register_type'] == 'Service'])} Service invoices"
-                )
-                st.dataframe(consolidated_pr_to_display(consolidated_pr), use_container_width=True, height=220)
+                if consolidated_pr is not None:
+                    st.subheader("Consolidated Purchase Register")
+                    st.caption(
+                        f"{len(consolidated_pr[consolidated_pr['register_type'] == 'Sales'])} Sales + "
+                        f"{len(consolidated_pr[consolidated_pr['register_type'] == 'Service'])} Service invoices"
+                    )
+                    st.dataframe(consolidated_pr_to_display(consolidated_pr), use_container_width=True, height=220)
             with c2:
-                st.subheader("Consolidated GSTR-2A/2B")
-                st.caption(
-                    f"{len(consolidated_gstr[consolidated_gstr['gstr_type'] == 'Sales'])} Sales + "
-                    f"{len(consolidated_gstr[consolidated_gstr['gstr_type'] == 'Service'])} Service invoices"
-                )
-                st.dataframe(consolidated_gstr_to_display(consolidated_gstr), use_container_width=True, height=220)
+                if consolidated_gstr is not None:
+                    st.subheader("Consolidated GSTR-2A/2B")
+                    st.caption(gstr_summary_caption(consolidated_gstr))
+                    st.dataframe(consolidated_gstr_to_display(consolidated_gstr), use_container_width=True, height=220)
 
         st.subheader("Summary")
         m1, m2, m3, m4, m5 = st.columns(5)
@@ -173,13 +193,15 @@ if files_ready:
         st.dataframe(result, use_container_width=True, height=450)
 
 else:
-    if pr_mode == "Sales + Service (Consolidate)":
-        st.info(
-            "Upload Sales + Service Purchase Registers and Sales + Service GSTR-2A/2B files. "
-            "Both will be consolidated automatically."
-        )
-    else:
-        st.info("Upload Purchase Register and GSTR-2A/2B Excel files.")
+    hints = []
+    if not pr_ready:
+        hints.append("Purchase Register file(s)")
+    if not gstr_ready:
+        if gstr_mode == "Multiple periods (Consolidate)":
+            hints.append("at least one GSTR-2A/2B file per period")
+        else:
+            hints.append("GSTR-2A/2B file")
+    st.info(f"Upload {' and '.join(hints)} to begin.")
 
 st.divider()
 st.caption(

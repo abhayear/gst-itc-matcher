@@ -6,6 +6,8 @@ from .consolidate import (
     consolidated_to_display,
     export_consolidated_gstr,
     export_consolidated_purchase_register,
+    gstr_summary_caption,
+    label_from_filename,
 )
 from .engine import match_invoices, MatchSummary
 

@@ -306,15 +306,17 @@ def load_and_match_consolidated(
     return pr_std, gstr_std, result, summary
 
 
-def load_and_match_fully_consolidated(
+def load_and_match_with_consolidation(
     purchase_sources: list[tuple[Any, str]],
     gstr_sources: list[tuple[Any, str]],
     tax_tolerance: float = 1.0,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, MatchSummary]:
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame, MatchSummary]:
     pr_std = consolidate_purchase_registers(purchase_sources)
     gstr_std = consolidate_gstr_registers(gstr_sources)
     result, summary = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
-    return pr_std, gstr_std, result, summary
+    consolidated_pr = pr_std if len(purchase_sources) > 1 else None
+    consolidated_gstr = gstr_std if len(gstr_sources) > 1 else None
+    return consolidated_pr, consolidated_gstr, result, summary
 
 
 def export_to_excel(result: pd.DataFrame, summary: MatchSummary) -> bytes:
