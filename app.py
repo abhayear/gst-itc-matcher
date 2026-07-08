@@ -5,17 +5,22 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from matcher.consolidate import (
-    consolidated_gstr_to_display,
-    consolidated_pr_to_display,
-    export_consolidated_gstr,
-    export_consolidated_purchase_register,
-    gstr_summary_caption,
-    label_from_filename,
-)
-from matcher.engine import export_to_excel, load_and_match_with_consolidation
-
 st.set_page_config(page_title="GST ITC Matcher", page_icon="📊", layout="wide")
+
+try:
+    from matcher.consolidate import (
+        consolidated_gstr_to_display,
+        consolidated_pr_to_display,
+        export_consolidated_gstr,
+        export_consolidated_purchase_register,
+        gstr_summary_caption,
+        label_from_filename,
+    )
+    from matcher.engine import export_to_excel, load_and_match_with_consolidation
+except Exception as import_error:
+    st.error("App failed to start. Please refresh in a minute or contact support.")
+    st.exception(import_error)
+    st.stop()
 
 st.title("GST ITC Matcher")
 st.caption("Upload Purchase Register(s) and GSTR-2A/2B — consolidation and matching run automatically.")
