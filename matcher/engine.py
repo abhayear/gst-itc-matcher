@@ -8,12 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from .column_mapping import (
-    extract_standard_frame,
-    map_columns,
-    read_excel_with_headers,
-    read_gstr_excel,
-)
+from .column_mapping import read_gstr_excel, read_purchase_register_excel
 from .consolidate import consolidate_gstr_registers, consolidate_purchase_registers
 from .normalize import (
     amounts_equal,
@@ -286,9 +281,7 @@ def load_and_match(
     gstr_file: Any,
     tax_tolerance: float = 1.0,
 ) -> tuple[pd.DataFrame, MatchSummary]:
-    pr_raw = read_excel_with_headers(purchase_file)
-    pr_mapped = map_columns(pr_raw)
-    pr_std = extract_standard_frame(pr_raw, pr_mapped)
+    pr_std = read_purchase_register_excel(purchase_file)
     gstr_std = read_gstr_excel(gstr_file)
     return match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
 
@@ -312,9 +305,7 @@ def load_and_match_with_consolidation(
     pr_std = consolidate_purchase_registers(purchase_sources)
     gstr_std = consolidate_gstr_registers(gstr_sources)
     result, summary = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
-    consolidated_pr = pr_std if len(purchase_sources) > 1 else None
-    return consolidated_pr, gstr_std, result, summary
-
+    return pr_std, gstr_std, result, summary
 
 def export_to_excel(result: pd.DataFrame, summary: MatchSummary) -> bytes:
     buffer = BytesIO()

@@ -15,7 +15,7 @@ def main() -> None:
             {
                 "Supplier GSTIN": "27AABCU9603R1ZM",
                 "Supplier Name": "ABC Traders Pvt Ltd",
-                "Invoice No.": "INV-1001",
+                "Invoice Number": "INV-1001",
                 "Invoice Date": "2025-04-05",
                 "Taxable Value": 100000,
                 "IGST": 0,
@@ -25,7 +25,7 @@ def main() -> None:
             {
                 "Supplier GSTIN": "29AACCT1234M1Z5",
                 "Supplier Name": "XYZ Supplies",
-                "Invoice No.": "XYZ/2025/42",
+                "Invoice Number": "XYZ/2025/42",
                 "Invoice Date": "2025-04-10",
                 "Taxable Value": 50000,
                 "IGST": 9000,
@@ -35,7 +35,7 @@ def main() -> None:
             {
                 "Supplier GSTIN": "27AABCU9603R1ZM",
                 "Supplier Name": "ABC Traders Pvt Ltd",
-                "Invoice No.": "INV-1001",
+                "Invoice Number": "INV-1001",
                 "Invoice Date": "2025-04-05",
                 "Taxable Value": 100000,
                 "IGST": 0,
@@ -50,7 +50,7 @@ def main() -> None:
             {
                 "Supplier GSTIN": "27AABCU9603R1ZM",
                 "Supplier Name": "ABC Traders Pvt Ltd",
-                "Invoice No.": "INV-1002",
+                "Invoice Number": "INV-1002",
                 "Invoice Date": "2025-04-12",
                 "Taxable Value": 25000,
                 "IGST": 0,
@@ -60,7 +60,7 @@ def main() -> None:
             {
                 "Supplier GSTIN": "07AADCB2230M1Z8",
                 "Supplier Name": "Delta Services",
-                "Invoice No.": "DS-7788",
+                "Invoice Number": "DS-7788",
                 "Invoice Date": "2025-04-15",
                 "Taxable Value": 30000,
                 "IGST": 0,
@@ -259,6 +259,122 @@ def main() -> None:
         pd.DataFrame(rows).to_excel(writer, sheet_name="B2B", index=False, header=False)
         pd.DataFrame([["Read me"]]).to_excel(writer, sheet_name="Read me", index=False, header=False)
 
+    # Vyapar Purchase Report — two sheets like real desktop export
+    vyapar_path = SAMPLES_DIR / "sample_vyapar_purchase_report.xlsx"
+    with pd.ExcelWriter(vyapar_path, engine="openpyxl") as writer:
+        summary_rows = [
+            ["Generated on Apr 05, 2025 at 12:00 pm", "", "", "", "", "", "", "", "", "", ""],
+            ["", "", "", "", "", "", "", "", "", "", ""],
+            [
+                "Date",
+                "Party Name",
+                "Party's GSTIN No.",
+                "Bill No.",
+                "Transaction Type",
+                "Payment Status",
+                "Total Amount",
+                "Payment Type",
+                "Paid Amount",
+                "Balance Amount",
+                "Description",
+            ],
+            [
+                "05-04-2025",
+                "ABC Traders Pvt Ltd",
+                "27AABCU9603R1ZM",
+                "INV-1001",
+                "Purchase",
+                "Paid",
+                118000,
+                "Cash",
+                118000,
+                0,
+                "",
+            ],
+            [
+                "10-04-2025",
+                "XYZ Supplies",
+                "29AACCT1234M1Z5",
+                "XYZ/2025/42",
+                "Purchase",
+                "Paid",
+                59000,
+                "UPI",
+                59000,
+                0,
+                "",
+            ],
+        ]
+        pd.DataFrame(summary_rows).to_excel(
+            writer, sheet_name="Purchase Report", index=False, header=False
+        )
+
+        item_rows = [
+            [
+                "Date",
+                "Party Name",
+                "Invoice No.",
+                "Item Name",
+                "Service type",
+                "Item code",
+                "HSN/SAC",
+                "Quantity",
+                "Unit",
+                "Price/Unit",
+                "Discount",
+                "GST",
+                "Amount",
+            ],
+            [
+                "05-04-2025",
+                "ABC Traders Pvt Ltd",
+                "INV-1001",
+                "Widget A",
+                "",
+                "",
+                "84713010",
+                100,
+                "Nos",
+                1000,
+                "0.00(0.0%)",
+                "18000.00(18.0%)",
+                118000,
+            ],
+            [
+                "10-04-2025",
+                "XYZ Supplies",
+                "XYZ/2025/42",
+                "Part B",
+                "",
+                "",
+                "84733020",
+                50,
+                "Nos",
+                1000,
+                "0.00(0.0%)",
+                "9000.00(18.0%)",
+                59000,
+            ],
+            [
+                "12-04-2025",
+                "ABC Traders Pvt Ltd",
+                "INV-1002",
+                "Service C",
+                "",
+                "",
+                "998314",
+                1,
+                "Nos",
+                25000,
+                "0.00(0.0%)",
+                "4500.00(18.0%)",
+                29500,
+            ],
+        ]
+        pd.DataFrame(item_rows).to_excel(
+            writer, sheet_name="Purchase Items", index=False, header=False
+        )
+
     for path in (
         pr_path,
         sales_path,
@@ -271,6 +387,7 @@ def main() -> None:
         portal_path,
         messy_path,
         portal_b2b_path,
+        vyapar_path,
     ):
         print(f"Created {path}")
 

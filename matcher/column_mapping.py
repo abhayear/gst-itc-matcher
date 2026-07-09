@@ -29,6 +29,9 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "gstin",
         "supplier's gstin",
         "gstin of supplier / isd",
+        "gst no",
+        "gst number",
+        "gstin no",
     ),
     "supplier_name": (
         "trade/legal name of the supplier",
@@ -53,6 +56,13 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "inv no.",
         "debit note number",
         "credit note number",
+        "ref no",
+        "ref. no",
+        "reference no",
+        "reference number",
+        "ref number",
+        "bill number",
+        "supplier invoice number",
     ),
     "invoice_date": (
         "invoice date",
@@ -67,18 +77,25 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "taxable amount",
         "total taxable value",
         "taxable val",
+        "amount before tax",
+        "subtotal",
+        "sub total",
+        "net amount",
+        "amount",
     ),
     "igst": (
         "integrated tax",
         "igst",
         "integrated tax amount",
         "igst amount",
+        "igst tax",
     ),
     "cgst": (
         "central tax",
         "cgst",
         "central tax amount",
         "cgst amount",
+        "cgst tax",
     ),
     "sgst": (
         "state/ut tax",
@@ -86,6 +103,7 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "state tax",
         "sgst",
         "sgst amount",
+        "sgst tax",
     ),
 }
 
@@ -120,7 +138,7 @@ KEYWORD_FALLBACKS: dict[str, tuple[str, ...]] = {
     "igst": ("integrated", "igst"),
     "cgst": ("central", "cgst"),
     "sgst": ("state", "sgst", "ut tax"),
-    "taxable_value": ("taxable value", "taxable"),
+    "taxable_value": ("taxable value", "taxable", "before tax", "subtotal"),
 }
 
 NON_GSTR_COLUMN_HINTS = (
@@ -150,9 +168,271 @@ SECTION_ROW_HINTS = (
     "download excel",
     "goods and services tax",
     "government of india",
+    "purchase report",
+    "sale report",
+    "from date",
+    "to date",
+    "between date",
+    "firm name",
+    "gst detail report",
+    "gstr-2",
+    "gstr 2",
 )
 
 GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z0-9]{13}$")
+
+VYAPAR_VALUE_RATE_PATTERN = re.compile(
+    r"^\s*([\d,]+(?:\.\d+)?)\s*\(\s*([\d,]+(?:\.\d+)?)\s*%\s*\)\s*$"
+)
+
+
+def _normalize_vyapar_gstin(value: Any) -> str:
+    if not _is_valid_gstin(value):
+        return ""
+    return re.sub(r"[^0-9A-Z]", "", str(value).strip().upper())
+
+
+def _parse_vyapar_number(value: Any) -> float:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return 0.0
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return 0.0
+    rate_match = VYAPAR_VALUE_RATE_PATTERN.match(text)
+    if rate_match:
+        return float(rate_match.group(1))
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def _normalize_sheet_name(name: str) -> str:
+    return _normalize_header(name).replace(" ", "")
+
+
+def _find_vyapar_sheet(sheet_names: list[str], keyword: str) -> str | None:
+    key = keyword.replace(" ", "")
+    for name in sheet_names:
+        if key in _normalize_sheet_name(name):
+            return name
+    return None
+
+
+def _is_vyapar_purchase_workbook(sheet_names: list[str]) -> bool:
+    return _find_vyapar_sheet(sheet_names, "purchase items") is not None
+
+
+def _vyapar_column(df: pd.DataFrame, *keywords: str) -> str | None:
+    best_col: str | None = None
+    best_score = 0
+    for keyword in keywords:
+        keyword_norm = _normalize_header(keyword)
+        for column in df.columns:
+            column_norm = _normalize_header(column)
+            if column_norm == keyword_norm:
+                return column
+            if keyword_norm in column_norm:
+                score = len(keyword_norm)
+                if score > best_score:
+                    best_score = score
+                    best_col = column
+    return best_col
+
+
+def _read_vyapar_gstin_lookup(source: Any, sheet_name: str) -> dict[str, str]:
+    """Map bill/invoice number and party name to GSTIN from Vyapar Purchase Report sheet."""
+    raw = pd.read_excel(source, sheet_name=sheet_name, header=None, dtype=object)
+    header_idx: int | None = None
+    for idx in range(min(len(raw), 30)):
+        cells = [_normalize_header(cell) for cell in raw.iloc[idx].tolist()]
+        has_bill = any("bill no" in cell or "invoice no" in cell for cell in cells)
+        has_gstin = any("gstin" in cell for cell in cells)
+        has_party = any("party name" in cell for cell in cells)
+        if has_bill and has_gstin and has_party:
+            header_idx = idx
+            break
+    if header_idx is None:
+        return {}
+
+    headers = [_normalize_header(cell) for cell in raw.iloc[header_idx].tolist()]
+    df = raw.iloc[header_idx + 1 :].copy()
+    width = min(len(headers), df.shape[1])
+    df = df.iloc[:, :width]
+    df.columns = _dedupe_headers(headers[:width])
+    df = df.dropna(how="all").reset_index(drop=True)
+
+    bill_col = _vyapar_column(df, "bill no", "invoice no")
+    gstin_col = _vyapar_column(df, "party s gstin", "gstin")
+    party_col = _vyapar_column(df, "party name")
+
+    lookup: dict[str, str] = {}
+    for _, row in df.iterrows():
+        gstin = _normalize_vyapar_gstin(row[gstin_col]) if gstin_col else ""
+        if not gstin:
+            continue
+        if bill_col and pd.notna(row.get(bill_col)):
+            lookup[str(row[bill_col]).strip().upper()] = gstin
+        if party_col and pd.notna(row.get(party_col)):
+            lookup[str(row[party_col]).strip().upper()] = gstin
+    return lookup
+
+
+def _detect_buyer_state(
+    source: Any,
+    summary_sheet: str | None,
+    supplier_gstins: set[str],
+) -> str:
+    if not summary_sheet:
+        return ""
+    raw = pd.read_excel(source, sheet_name=summary_sheet, header=None, dtype=object)
+    for idx in range(min(len(raw), 15)):
+        for cell in raw.iloc[idx].tolist():
+            gstin = _normalize_vyapar_gstin(cell)
+            if gstin and gstin not in supplier_gstins:
+                return gstin[:2]
+    return ""
+
+
+def _split_vyapar_gst(
+    total_gst: float,
+    supplier_gstin: str,
+    buyer_state: str,
+) -> tuple[float, float, float]:
+    total_gst = round(total_gst, 2)
+    if total_gst <= 0:
+        return 0.0, 0.0, 0.0
+    supplier_state = supplier_gstin[:2] if len(supplier_gstin) >= 2 else ""
+    if buyer_state and supplier_state and supplier_state != buyer_state:
+        return 0.0, 0.0, total_gst
+    cgst = round(total_gst / 2, 2)
+    sgst = round(total_gst - cgst, 2)
+    return cgst, sgst, 0.0
+
+
+def _read_vyapar_purchase_items(
+    source: Any,
+    sheet_name: str,
+    gstin_lookup: dict[str, str],
+    buyer_state: str,
+) -> pd.DataFrame:
+    raw = pd.read_excel(source, sheet_name=sheet_name, header=None, dtype=object)
+    header_idx: int | None = None
+    for idx in range(min(len(raw), 30)):
+        cells = [_normalize_header(cell) for cell in raw.iloc[idx].tolist()]
+        has_invoice = any("invoice no" in cell or "bill no" in cell for cell in cells)
+        has_party = any("party name" in cell for cell in cells)
+        has_gst = any(cell == "gst" or cell.endswith(" gst") for cell in cells)
+        if has_invoice and has_party and has_gst:
+            header_idx = idx
+            break
+    if header_idx is None:
+        raise ValueError("Could not find column headers in Vyapar Purchase Items sheet.")
+
+    headers = [_normalize_header(cell) for cell in raw.iloc[header_idx].tolist()]
+    df = raw.iloc[header_idx + 1 :].copy()
+    width = min(len(headers), df.shape[1])
+    df = df.iloc[:, :width]
+    df.columns = _dedupe_headers(headers[:width])
+    df = df.dropna(how="all").reset_index(drop=True)
+
+    date_col = _vyapar_column(df, "date")
+    party_col = _vyapar_column(df, "party name")
+    inv_col = _vyapar_column(df, "invoice no", "bill no")
+    qty_col = _vyapar_column(df, "quantity")
+    price_col = _vyapar_column(df, "price unit", "price/unit")
+    discount_col = _vyapar_column(df, "discount")
+    gst_col = _vyapar_column(df, "gst")
+    amount_col = _vyapar_column(df, "amount")
+
+    if not date_col or not party_col or not inv_col:
+        raise ValueError(
+            "Vyapar Purchase Items sheet must include Date, Party Name, and Invoice No. columns."
+        )
+
+    records: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        invoice_no = str(row[inv_col]).strip() if pd.notna(row[inv_col]) else ""
+        if not invoice_no or invoice_no.lower() in {"nan", "none", "total"}:
+            continue
+        party = str(row[party_col]).strip() if pd.notna(row[party_col]) else ""
+        qty = _parse_vyapar_number(row.get(qty_col)) if qty_col else 1.0
+        price = _parse_vyapar_number(row.get(price_col)) if price_col else 0.0
+        discount = _parse_vyapar_number(row.get(discount_col)) if discount_col else 0.0
+        gst_amount = _parse_vyapar_number(row.get(gst_col)) if gst_col else 0.0
+
+        if qty_col and price_col:
+            taxable_line = max(qty * price - discount, 0.0)
+        elif amount_col:
+            taxable_line = max(_parse_vyapar_number(row.get(amount_col)) - gst_amount, 0.0)
+        else:
+            taxable_line = 0.0
+
+        records.append(
+            {
+                "invoice_date": row[date_col],
+                "supplier_name": party,
+                "invoice_no": invoice_no,
+                "taxable_line": taxable_line,
+                "gst_line": gst_amount,
+            }
+        )
+
+    if not records:
+        raise ValueError("No purchase items found in Vyapar Purchase Items sheet.")
+
+    items = pd.DataFrame(records)
+    grouped = items.groupby(["invoice_date", "supplier_name", "invoice_no"], as_index=False).agg(
+        taxable_value=("taxable_line", "sum"),
+        gst_total=("gst_line", "sum"),
+    )
+
+    rows: list[dict[str, Any]] = []
+    for _, row in grouped.iterrows():
+        invoice_key = str(row["invoice_no"]).strip().upper()
+        party_key = str(row["supplier_name"]).strip().upper()
+        gstin = gstin_lookup.get(invoice_key) or gstin_lookup.get(party_key) or ""
+        cgst, sgst, igst = _split_vyapar_gst(float(row["gst_total"]), gstin, buyer_state)
+        rows.append(
+            {
+                "gstin": gstin,
+                "supplier_name": row["supplier_name"],
+                "invoice_no": row["invoice_no"],
+                "invoice_date": row["invoice_date"],
+                "taxable_value": round(float(row["taxable_value"]), 2),
+                "igst": igst,
+                "cgst": cgst,
+                "sgst": sgst,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _read_vyapar_purchase_excel(source: Any, filename: str = "") -> pd.DataFrame:
+    if hasattr(source, "seek"):
+        source.seek(0)
+    workbook = pd.ExcelFile(source)
+    items_sheet = _find_vyapar_sheet(workbook.sheet_names, "purchase items")
+    summary_sheet = _find_vyapar_sheet(workbook.sheet_names, "purchase report")
+    if not items_sheet:
+        prefix = f"File '{filename}': " if filename else ""
+        raise ValueError(f"{prefix}Vyapar Purchase Items sheet not found.")
+
+    gstin_lookup: dict[str, str] = {}
+    buyer_state = ""
+    if summary_sheet:
+        if hasattr(source, "seek"):
+            source.seek(0)
+        gstin_lookup = _read_vyapar_gstin_lookup(source, summary_sheet)
+        supplier_gstins = set(gstin_lookup.values())
+        if hasattr(source, "seek"):
+            source.seek(0)
+        buyer_state = _detect_buyer_state(source, summary_sheet, supplier_gstins)
+
+    if hasattr(source, "seek"):
+        source.seek(0)
+    return _read_vyapar_purchase_items(source, items_sheet, gstin_lookup, buyer_state)
 
 
 def _normalize_header(header: str) -> str:
@@ -160,8 +440,9 @@ def _normalize_header(header: str) -> str:
         return ""
     text = str(header).strip().lower()
     text = re.sub(r"\([^)]*\)", "", text)
-    text = text.replace("₹", "").replace("rs.", "").replace("rs", "").replace("/", " / ")
-    text = re.sub(r"[^\w\s/]", " ", text)
+    text = text.replace("₹", "").replace("rs.", "").replace("rs", "")
+    text = text.replace("/", " ").replace("\\", " ")
+    text = re.sub(r"[^\w\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -313,11 +594,11 @@ def _header_row_combinations(scan_limit: int) -> list[list[int]]:
     return combos
 
 
-def _find_best_gstr_table(raw: pd.DataFrame) -> pd.DataFrame | None:
+def _find_best_register_table(raw: pd.DataFrame, scan_limit: int = 60) -> pd.DataFrame | None:
     best_df: pd.DataFrame | None = None
     best_key = (-1, -1, -1)
 
-    scan_limit = min(len(raw), 30)
+    scan_limit = min(len(raw), scan_limit)
     for header_rows in _header_row_combinations(scan_limit):
         candidate = _dataframe_from_header(raw, header_rows)
         if candidate.empty:
@@ -337,6 +618,10 @@ def _find_best_gstr_table(raw: pd.DataFrame) -> pd.DataFrame | None:
             best_df = std
 
     return best_df
+
+
+def _find_best_gstr_table(raw: pd.DataFrame) -> pd.DataFrame | None:
+    return _find_best_register_table(raw, scan_limit=30)
 
 
 def detect_header_row(df: pd.DataFrame, max_rows: int = 30) -> int:
@@ -378,6 +663,29 @@ def _looks_like_non_gstr_export(df: pd.DataFrame) -> bool:
     return hits >= 2 and not has_tax_columns
 
 
+def _looks_like_vyapar_payment_export(df: pd.DataFrame) -> bool:
+    return _looks_like_non_gstr_export(df)
+
+
+def _format_pr_column_error(df: pd.DataFrame, missing: list[str]) -> str:
+    found = ", ".join(col for col in df.columns if col)[:500]
+    if _looks_like_vyapar_payment_export(df):
+        return (
+            f"Could not detect required columns: {', '.join(missing)}. "
+            "This looks like a Vyapar Purchase Report summary sheet without tax columns. "
+            f"Found columns: {found}. "
+            "Upload the full Vyapar export with the **Purchase Items** tab "
+            "(Date, Party Name, Invoice No., Quantity, Price/Unit, GST). "
+            "The app reads Purchase Items and converts it to sample Purchase Register format."
+        )
+    return (
+        f"Could not detect required columns: {', '.join(missing)}. "
+        f"Found columns: {found}. "
+        "Please ensure your file includes GSTIN, invoice number, date, and tax columns "
+        "(Taxable Value, IGST, CGST, SGST)."
+    )
+
+
 def _format_column_error(df: pd.DataFrame, missing: list[str]) -> str:
     found = ", ".join(col for col in df.columns if col)[:500]
     if _looks_like_non_gstr_export(df):
@@ -411,6 +719,13 @@ def map_columns(df: pd.DataFrame) -> dict[str, str]:
                 score = max(score, _keyword_score(col, KEYWORD_FALLBACKS[field]))
             if field == "taxable_value" and "invoice value" in _normalize_header(col):
                 score = max(score - 30, 0)
+            normalized_col = _normalize_header(col)
+            if field == "taxable_value" and normalized_col in {"total amount", "total", "grand total"}:
+                score = max(score - 50, 0)
+            if field == "taxable_value" and normalized_col == "amount":
+                score = max(score, 55)
+            if field == "invoice_no" and normalized_col in {"ref no", "reference no", "ref number"}:
+                score = max(score, 70)
             if score > best_score:
                 best_score = score
                 best_col = col
@@ -429,7 +744,53 @@ def extract_standard_frame(df: pd.DataFrame, mapping: dict[str, str]) -> pd.Data
 
 
 def read_excel_with_headers(path_or_buffer: Any, sheet_name: str | int = 0) -> pd.DataFrame:
-    return _read_sheet_raw(path_or_buffer, sheet_name)
+    return read_purchase_register_excel(path_or_buffer, sheet_name=sheet_name)
+
+
+def read_purchase_register_excel(
+    path_or_buffer: Any,
+    sheet_name: str | int = 0,
+    filename: str = "",
+) -> pd.DataFrame:
+    """Read Purchase Register Excel, including Vyapar/Tally multi-row header exports."""
+    if hasattr(path_or_buffer, "read"):
+        data = path_or_buffer.read()
+        source: Any = BytesIO(data)
+    else:
+        source = path_or_buffer
+
+    if hasattr(source, "seek"):
+        source.seek(0)
+    workbook = pd.ExcelFile(source)
+    if _is_vyapar_purchase_workbook(workbook.sheet_names):
+        return _read_vyapar_purchase_excel(source, filename=filename)
+
+    if hasattr(source, "seek"):
+        source.seek(0)
+    raw = pd.read_excel(source, sheet_name=sheet_name, header=None, dtype=object)
+    best = _find_best_register_table(raw, scan_limit=60)
+    if best is not None and not best.empty:
+        return best
+
+    header_row = detect_header_row(raw)
+    candidate = _dataframe_from_header(raw, [header_row])
+    if candidate.empty:
+        prefix = f"File '{filename}': " if filename else ""
+        raise ValueError(f"{prefix}No purchase invoice rows found in the Excel file.")
+
+    try:
+        mapping = map_columns(candidate)
+        filtered = _filter_invoice_rows(candidate, mapping)
+        return extract_standard_frame(filtered, mapping)
+    except ValueError as exc:
+        prefix = f"File '{filename}': " if filename else ""
+        missing_match = re.search(r"required columns: ([^.]+)", str(exc))
+        missing = (
+            [part.strip() for part in missing_match.group(1).split(",")]
+            if missing_match
+            else list(REQUIRED_FIELDS)
+        )
+        raise ValueError(prefix + _format_pr_column_error(candidate, missing)) from exc
 
 
 def _is_gstr_data_sheet(sheet_name: str) -> bool:

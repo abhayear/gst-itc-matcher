@@ -59,6 +59,11 @@ if pr_mode == "Sales + Service (Consolidate)":
     with c2:
         service_pr = st.file_uploader("Service Purchase Register", type=["xlsx", "xls"], key="service_pr")
 else:
+    st.caption(
+        "Upload **Vyapar Purchase Report** Excel (must include **Purchase Items** sheet). "
+        "Reports → Purchase Report → Excel export. "
+        "The app converts Purchase Items into sample Purchase Register format automatically."
+    )
     pr_file = st.file_uploader("Purchase Register (Excel)", type=["xlsx", "xls"], key="pr")
 
 st.subheader("GSTR-2A / 2B")
@@ -158,9 +163,9 @@ if files_ready:
         with d2:
             if st.session_state.get("consolidated_pr") is not None:
                 st.download_button(
-                    label="Download Consolidated Purchase Register",
+                    label="Download Purchase Register (Sample Format)",
                     data=export_consolidated_purchase_register(st.session_state["consolidated_pr"]),
-                    file_name="consolidated_purchase_register.xlsx",
+                    file_name="purchase_register_sample.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
@@ -180,11 +185,16 @@ if files_ready:
             c1, c2 = st.columns(2)
             with c1:
                 if consolidated_pr is not None:
-                    st.subheader("Consolidated Purchase Register")
-                    st.caption(
-                        f"{len(consolidated_pr[consolidated_pr['register_type'] == 'Sales'])} Sales + "
-                        f"{len(consolidated_pr[consolidated_pr['register_type'] == 'Service'])} Service invoices"
-                    )
+                    st.subheader("Purchase Register (Sample Format)")
+                    caption = f"{len(consolidated_pr)} invoices converted from your upload"
+                    if (
+                        "register_type" in consolidated_pr.columns
+                        and consolidated_pr["register_type"].nunique() > 1
+                    ):
+                        sales_count = len(consolidated_pr[consolidated_pr["register_type"] == "Sales"])
+                        service_count = len(consolidated_pr[consolidated_pr["register_type"] == "Service"])
+                        caption = f"{sales_count} Sales + {service_count} Service invoices"
+                    st.caption(caption)
                     st.dataframe(consolidated_pr_to_display(consolidated_pr), use_container_width=True, height=220)
             with c2:
                 if consolidated_gstr is not None:

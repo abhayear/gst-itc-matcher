@@ -10,16 +10,37 @@ from typing import Any
 import pandas as pd
 
 from .column_mapping import (
-    extract_standard_frame,
-    map_columns,
-    read_excel_with_headers,
     read_gstr_excel,
+    read_purchase_register_excel,
 )
+from .normalize import normalize_date
 
 FIELD_TO_OUTPUT = {
     "gstin": "Supplier GSTIN",
     "supplier_name": "Supplier Name",
     "invoice_no": "Invoice No.",
+    "invoice_date": "Invoice Date",
+    "taxable_value": "Taxable Value",
+    "igst": "IGST",
+    "cgst": "CGST",
+    "sgst": "SGST",
+}
+
+PR_SAMPLE_COLUMNS = [
+    "Supplier GSTIN",
+    "Supplier Name",
+    "Invoice Number",
+    "Invoice Date",
+    "Taxable Value",
+    "IGST",
+    "CGST",
+    "SGST",
+]
+
+PR_SAMPLE_FIELD_MAP = {
+    "gstin": "Supplier GSTIN",
+    "supplier_name": "Supplier Name",
+    "invoice_no": "Invoice Number",
     "invoice_date": "Invoice Date",
     "taxable_value": "Taxable Value",
     "igst": "IGST",
@@ -107,9 +128,7 @@ def _read_standard_register(
             raw = read_gstr_excel(source, filename=filename)
             std = raw.copy()
         else:
-            raw = read_excel_with_headers(source)
-            mapping = map_columns(raw)
-            std = extract_standard_frame(raw, mapping)
+            std = read_purchase_register_excel(source, filename=filename)
         std[label_column] = source_type
         return std
     except ValueError as exc:
@@ -173,7 +192,29 @@ def consolidated_to_display(
 
 
 def consolidated_pr_to_display(consolidated: pd.DataFrame) -> pd.DataFrame:
-    return consolidated_to_display(consolidated, PR_LABEL_COLUMN, PR_LABEL_OUTPUT)
+    return pr_to_sample_format(consolidated)
+
+
+def _format_sample_date(value: Any) -> Any:
+    parsed = normalize_date(value)
+    if parsed is not None:
+        return parsed.isoformat()
+    return value
+
+
+def pr_to_sample_format(consolidated: pd.DataFrame) -> pd.DataFrame:
+    """Convert Vyapar/Tally PR data into flat sample-style Excel columns."""
+    display = pd.DataFrame(
+        {PR_SAMPLE_FIELD_MAP[field]: consolidated[field] for field in PR_SAMPLE_FIELD_MAP}
+    )
+    display["Invoice Date"] = display["Invoice Date"].map(_format_sample_date)
+    for col in ("Taxable Value", "IGST", "CGST", "SGST"):
+        display[col] = pd.to_numeric(display[col], errors="coerce").fillna(0).round(2)
+    if PR_LABEL_COLUMN in consolidated.columns:
+        types = consolidated[PR_LABEL_COLUMN].nunique()
+        if types > 1:
+            display["Register Type"] = consolidated[PR_LABEL_COLUMN].values
+    return display[display.columns].reset_index(drop=True)
 
 
 def consolidated_gstr_to_display(consolidated: pd.DataFrame) -> pd.DataFrame:
@@ -218,13 +259,24 @@ def _export_consolidated(
 
 
 def export_consolidated_purchase_register(consolidated: pd.DataFrame) -> bytes:
-    return _export_consolidated(
-        consolidated,
-        PR_LABEL_COLUMN,
-        PR_LABEL_OUTPUT,
-        "Consolidated PR",
-        "#E2EFDA",
-    )
+    display = pr_to_sample_format(consolidated)
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        display.to_excel(writer, sheet_name="Purchase Register", index=False)
+        workbook = writer.book
+        worksheet = writer.sheets["Purchase Register"]
+        header_fmt = workbook.add_format({"bold": True, "bg_color": "#E2EFDA", "border": 1})
+        for col_num, value in enumerate(display.columns.values):
+            worksheet.write(0, col_num, value, header_fmt)
+        worksheet.autofilter(0, 0, len(display), len(display.columns) - 1)
+        worksheet.freeze_panes(1, 0)
+        worksheet.set_column(0, 0, 18)
+        worksheet.set_column(1, 1, 28)
+        worksheet.set_column(2, 2, 18)
+        worksheet.set_column(3, 3, 14)
+        worksheet.set_column(4, 7, 14)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def export_consolidated_gstr(consolidated: pd.DataFrame) -> bytes:
