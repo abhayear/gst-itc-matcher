@@ -10,6 +10,13 @@ import pandas as pd
 
 from .column_mapping import read_gstr_excel, read_purchase_register_excel
 from .consolidate import consolidate_gstr_registers, consolidate_purchase_registers
+from .itc_dashboard import (
+    ITCDashboardSummary,
+    build_itc_dashboard,
+    dashboard_summary_rows,
+    enrich_match_result,
+    generate_ai_recommendations,
+)
 from .normalize import (
     amounts_equal,
     normalize_amount,
@@ -39,7 +46,12 @@ OUTPUT_COLUMNS = [
     "Purchase Register",
     "GSTR-2A/2B",
     "Match Status",
+    "Available ITC",
+    "Eligible ITC",
+    "Non-Eligible ITC",
+    "ITC Category",
     "ITC Taken",
+    "AI Recommendation",
     "Remarks",
 ]
 
@@ -156,6 +168,30 @@ def _compute_itc(
     return 0.0, 0.0, 0.0, 0.0, ""
 
 
+def _attach_tax_breakup(
+    row: dict[str, Any],
+    pr_row: pd.Series | None,
+    gstr_row: pd.Series | None,
+) -> None:
+    if pr_row is not None:
+        row["_pr_igst"] = _format_amount(pr_row["_igst"])
+        row["_pr_cgst"] = _format_amount(pr_row["_cgst"])
+        row["_pr_sgst"] = _format_amount(pr_row["_sgst"])
+    else:
+        row["_pr_igst"] = 0.0
+        row["_pr_cgst"] = 0.0
+        row["_pr_sgst"] = 0.0
+
+    if gstr_row is not None:
+        row["_gstr_igst"] = _format_amount(gstr_row["_igst"])
+        row["_gstr_cgst"] = _format_amount(gstr_row["_cgst"])
+        row["_gstr_sgst"] = _format_amount(gstr_row["_sgst"])
+    else:
+        row["_gstr_igst"] = 0.0
+        row["_gstr_cgst"] = 0.0
+        row["_gstr_sgst"] = 0.0
+
+
 def _find_best_gstr_match(
     pr_row: pd.Series,
     gstr_df: pd.DataFrame,
@@ -194,7 +230,7 @@ def match_invoices(
     purchase_register: pd.DataFrame,
     gstr_data: pd.DataFrame,
     tax_tolerance: float = 1.0,
-) -> tuple[pd.DataFrame, MatchSummary]:
+) -> tuple[pd.DataFrame, MatchSummary, ITCDashboardSummary]:
     pr = _prepare_records(purchase_register, "PR")
     gstr = _prepare_records(gstr_data, "GSTR")
 
@@ -213,6 +249,7 @@ def match_invoices(
                 row["_itc_igst"] = 0.0
                 row["_itc_cgst"] = 0.0
                 row["_itc_sgst"] = 0.0
+                _attach_tax_breakup(row, pr_row, None)
                 output_rows.append(row)
                 continue
             seen_keys.add(pr_row["_full_key"])
@@ -234,6 +271,7 @@ def match_invoices(
         row["_itc_igst"] = _format_amount(itc_igst)
         row["_itc_cgst"] = _format_amount(itc_cgst)
         row["_itc_sgst"] = _format_amount(itc_sgst)
+        _attach_tax_breakup(row, pr_row, gstr_row)
         output_rows.append(row)
 
     for idx, gstr_row in gstr.iterrows():
@@ -249,12 +287,14 @@ def match_invoices(
         row["_itc_igst"] = 0.0
         row["_itc_cgst"] = 0.0
         row["_itc_sgst"] = 0.0
+        _attach_tax_breakup(row, None, gstr_row)
         output_rows.append(row)
 
-    full_result = pd.DataFrame(output_rows)
+    full_result = enrich_match_result(pd.DataFrame(output_rows))
+    dashboard = build_itc_dashboard(full_result, gstr)
     summary = _build_summary(full_result)
     result = full_result[OUTPUT_COLUMNS].copy()
-    return result, summary
+    return result, summary, dashboard
 
 
 def _build_summary(full_result: pd.DataFrame) -> MatchSummary:
@@ -280,7 +320,7 @@ def load_and_match(
     purchase_file: Any,
     gstr_file: Any,
     tax_tolerance: float = 1.0,
-) -> tuple[pd.DataFrame, MatchSummary]:
+) -> tuple[pd.DataFrame, MatchSummary, ITCDashboardSummary]:
     pr_std = read_purchase_register_excel(purchase_file)
     gstr_std = read_gstr_excel(gstr_file)
     return match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
@@ -290,45 +330,59 @@ def load_and_match_consolidated(
     purchase_sources: list[tuple[Any, str]],
     gstr_file: Any,
     tax_tolerance: float = 1.0,
-) -> tuple[pd.DataFrame, pd.DataFrame, MatchSummary]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, MatchSummary, ITCDashboardSummary]:
     pr_std = consolidate_purchase_registers(purchase_sources)
     gstr_std = read_gstr_excel(gstr_file)
-    result, summary = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
-    return pr_std, gstr_std, result, summary
+    result, summary, dashboard = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
+    return pr_std, gstr_std, result, summary, dashboard
 
 
 def load_and_match_with_consolidation(
     purchase_sources: list[tuple[Any, str]],
     gstr_sources: list[tuple[Any, str]],
     tax_tolerance: float = 1.0,
-) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame, MatchSummary]:
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame, MatchSummary, ITCDashboardSummary]:
     pr_std = consolidate_purchase_registers(purchase_sources)
     gstr_std = consolidate_gstr_registers(gstr_sources)
-    result, summary = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
-    return pr_std, gstr_std, result, summary
+    result, summary, dashboard = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
+    return pr_std, gstr_std, result, summary, dashboard
 
-def export_to_excel(result: pd.DataFrame, summary: MatchSummary) -> bytes:
+def _summary_rows(summary: MatchSummary, dashboard: ITCDashboardSummary | None = None) -> list[tuple[str, Any]]:
+    rows = [
+        ("Total Rows", summary.total_rows),
+        ("Fully Matched", summary.fully_matched),
+        ("Tax Mismatch", summary.tax_mismatch),
+        ("GSTIN Mismatch", summary.gstin_mismatch),
+        ("Inv No Mismatch", summary.inv_no_mismatch),
+        ("Inv Date Mismatch", summary.inv_date_mismatch),
+        ("Not Matched", summary.not_matched),
+        ("Duplicate Invoice", summary.duplicate),
+        ("Missing in Purchase Register", summary.missing_in_pr),
+        ("", ""),
+        ("Eligible ITC - IGST", summary.total_itc_igst),
+        ("Eligible ITC - CGST", summary.total_itc_cgst),
+        ("Eligible ITC - SGST", summary.total_itc_sgst),
+        ("Total ITC Taken", summary.total_itc),
+    ]
+    if dashboard is not None:
+        rows.extend([("", ""), *dashboard_summary_rows(dashboard)])
+    return rows
+
+
+def export_to_excel(
+    result: pd.DataFrame,
+    summary: MatchSummary,
+    dashboard: ITCDashboardSummary | None = None,
+) -> bytes:
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         result.to_excel(writer, sheet_name="ITC Matching", index=False)
-        summary_rows = [
-            ("Total Rows", summary.total_rows),
-            ("Fully Matched", summary.fully_matched),
-            ("Tax Mismatch", summary.tax_mismatch),
-            ("GSTIN Mismatch", summary.gstin_mismatch),
-            ("Inv No Mismatch", summary.inv_no_mismatch),
-            ("Inv Date Mismatch", summary.inv_date_mismatch),
-            ("Not Matched", summary.not_matched),
-            ("Duplicate Invoice", summary.duplicate),
-            ("Missing in Purchase Register", summary.missing_in_pr),
-            ("", ""),
-            ("Eligible ITC - IGST", summary.total_itc_igst),
-            ("Eligible ITC - CGST", summary.total_itc_cgst),
-            ("Eligible ITC - SGST", summary.total_itc_sgst),
-            ("Total ITC Taken", summary.total_itc),
-        ]
-        summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
+        summary_df = pd.DataFrame(_summary_rows(summary, dashboard), columns=["Metric", "Value"])
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        if dashboard is not None:
+            tips = generate_ai_recommendations(dashboard, result)
+            tips_df = pd.DataFrame({"AI Recommendation": tips})
+            tips_df.to_excel(writer, sheet_name="AI Recommendations", index=False)
 
         workbook = writer.book
         worksheet = writer.sheets["ITC Matching"]
@@ -338,5 +392,95 @@ def export_to_excel(result: pd.DataFrame, summary: MatchSummary) -> bytes:
         worksheet.autofilter(0, 0, len(result), len(result.columns) - 1)
         worksheet.freeze_panes(1, 0)
 
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def export_to_csv(
+    result: pd.DataFrame,
+    summary: MatchSummary,
+    dashboard: ITCDashboardSummary | None = None,
+) -> bytes:
+    buffer = BytesIO()
+    buffer.write("\ufeff".encode("utf-8"))
+    result.to_csv(buffer, index=False, lineterminator="\n")
+    buffer.write(b"\n")
+    summary_df = pd.DataFrame(_summary_rows(summary, dashboard), columns=["Metric", "Value"])
+    summary_df.to_csv(buffer, index=False, lineterminator="\n")
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _pdf_format_cell(value: Any) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    if isinstance(value, float):
+        return f"{value:,.2f}"
+    return str(value).replace("\n", " ")[:120]
+
+
+def export_to_pdf(
+    result: pd.DataFrame,
+    summary: MatchSummary,
+    dashboard: ITCDashboardSummary | None = None,
+) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=24,
+        rightMargin=24,
+        topMargin=24,
+        bottomMargin=24,
+    )
+    styles = getSampleStyleSheet()
+    story: list[Any] = [
+        Paragraph("GST ITC Matching Report", styles["Title"]),
+        Spacer(1, 0.2 * inch),
+    ]
+
+    summary_table_data = [["Metric", "Value"]] + [
+        [metric, _pdf_format_cell(value)] for metric, value in _summary_rows(summary, dashboard)
+    ]
+    summary_table = Table(summary_table_data, colWidths=[3.2 * inch, 2.0 * inch])
+    summary_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9E1F2")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    story.extend([summary_table, Spacer(1, 0.25 * inch), Paragraph("Matching Results", styles["Heading2"])])
+
+    headers = list(result.columns)
+    table_data = [headers] + [
+        [_pdf_format_cell(value) for value in row] for row in result.itertuples(index=False, name=None)
+    ]
+    page_width = landscape(A4)[0] - 48
+    col_width = page_width / max(len(headers), 1)
+    results_table = Table(table_data, colWidths=[col_width] * len(headers), repeatRows=1)
+    results_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9E1F2")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 6),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+    story.append(results_table)
+    doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()

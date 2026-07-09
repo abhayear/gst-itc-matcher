@@ -27,13 +27,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    result, summary = load_and_match(
+    result, summary, dashboard = load_and_match(
         args.purchase_register,
         args.gstr_file,
         tax_tolerance=args.tolerance,
     )
 
-    args.output.write_bytes(export_to_excel(result, summary))
+    args.output.write_bytes(export_to_excel(result, summary, dashboard))
 
     print(f"Report saved to {args.output}")
     print(f"Fully Matched: {summary.fully_matched}")

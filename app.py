@@ -24,7 +24,14 @@ try:
         gstr_summary_caption,
         label_from_filename,
     )
-    from matcher.engine import export_to_excel, load_and_match_with_consolidation
+    from matcher.engine import (
+        export_to_csv,
+        export_to_excel,
+        export_to_pdf,
+        generate_ai_recommendations,
+        load_and_match_with_consolidation,
+    )
+    from matcher.itc_dashboard import ITC_ELIGIBLE, ITC_NON_ELIGIBLE, ITC_PENDING
 except Exception as import_error:
     st.error("App failed to start. Please refresh in a minute or contact support.")
     st.exception(import_error)
@@ -130,7 +137,7 @@ if files_ready:
                 for source, _ in purchase_sources + gstr_sources:
                     source.seek(0)
 
-                consolidated_pr, consolidated_gstr, result, summary = load_and_match_with_consolidation(
+                consolidated_pr, consolidated_gstr, result, summary, dashboard = load_and_match_with_consolidation(
                     purchase_sources,
                     gstr_sources,
                 )
@@ -138,28 +145,111 @@ if files_ready:
                 st.session_state["consolidated_gstr"] = consolidated_gstr
                 st.session_state["match_result"] = result
                 st.session_state["match_summary"] = summary
+                st.session_state["itc_dashboard"] = dashboard
                 st.session_state["last_file_key"] = file_key
             except Exception as exc:
-                for key in ("match_result", "match_summary", "consolidated_pr", "consolidated_gstr", "last_file_key"):
+                for key in (
+                    "match_result",
+                    "match_summary",
+                    "itc_dashboard",
+                    "consolidated_pr",
+                    "consolidated_gstr",
+                    "last_file_key",
+                ):
                     st.session_state.pop(key, None)
                 st.error(f"Could not process files: {exc}")
 
     if "match_result" in st.session_state:
         result: pd.DataFrame = st.session_state["match_result"]
         summary = st.session_state["match_summary"]
+        dashboard = st.session_state["itc_dashboard"]
 
-        st.success("Done! Review results below or download the reports.")
+        st.success("Done! Review the ITC dashboard below or download reports.")
 
-        d1, d2, d3 = st.columns(3)
-        with d1:
+        st.subheader("ITC Dashboard")
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Available ITC (GSTR-2B)", f"₹{dashboard.available_total:,.2f}")
+        d2.metric(
+            "Eligible ITC",
+            f"₹{dashboard.eligible_total:,.2f}",
+            help="Safe to claim in GSTR-3B after verification",
+        )
+        d3.metric("Pending Review", f"₹{dashboard.pending_total:,.2f}")
+        d4.metric("Non-Eligible ITC", f"₹{dashboard.non_eligible_total:,.2f}")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**ITC balance overview**")
+            balance_df = pd.DataFrame(
+                {
+                    "Amount": [
+                        dashboard.eligible_total,
+                        dashboard.pending_total,
+                        dashboard.non_eligible_total,
+                    ]
+                },
+                index=["Eligible", "Pending Review", "Non-Eligible"],
+            )
+            st.bar_chart(balance_df, height=280)
+        with c2:
+            st.markdown("**Available vs eligible by tax head**")
+            tax_df = pd.DataFrame(
+                {
+                    "Available (GSTR-2B)": [
+                        dashboard.available_igst,
+                        dashboard.available_cgst,
+                        dashboard.available_sgst,
+                    ],
+                    "Eligible ITC": [
+                        dashboard.eligible_igst,
+                        dashboard.eligible_cgst,
+                        dashboard.eligible_sgst,
+                    ],
+                },
+                index=["IGST", "CGST", "SGST"],
+            )
+            st.bar_chart(tax_df, height=280)
+
+        inv1, inv2, inv3, inv4 = st.columns(4)
+        inv1.metric("Eligible invoices", dashboard.eligible_invoices)
+        inv2.metric("Pending invoices", dashboard.pending_invoices)
+        inv3.metric("Non-eligible invoices", dashboard.non_eligible_invoices)
+        inv4.metric("Claim rate", f"{dashboard.claim_rate_pct}%")
+
+        st.subheader("AI Recommendations")
+        for tip in generate_ai_recommendations(dashboard, result):
+            st.info(tip)
+
+        st.markdown("**Download ITC Results**")
+        r1, r2, r3 = st.columns(3)
+        with r1:
             st.download_button(
-                label="Download ITC Taken Excel",
-                data=export_to_excel(result, summary),
+                label="Download Excel (.xlsx)",
+                data=export_to_excel(result, summary, dashboard),
                 file_name="itc_matching_report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
                 use_container_width=True,
             )
+        with r2:
+            st.download_button(
+                label="Download CSV (.csv)",
+                data=export_to_csv(result, summary, dashboard),
+                file_name="itc_matching_report.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with r3:
+            st.download_button(
+                label="Download PDF (.pdf)",
+                data=export_to_pdf(result, summary, dashboard),
+                file_name="itc_matching_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
+        st.markdown("**Download Converted Registers**")
+        d2, d3 = st.columns(2)
         with d2:
             if st.session_state.get("consolidated_pr") is not None:
                 st.download_button(
@@ -210,27 +300,30 @@ if files_ready:
                     )
                     st.dataframe(consolidated_gstr_to_display(consolidated_gstr), use_container_width=True, height=220)
 
-        st.subheader("Summary")
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Fully Matched", summary.fully_matched)
-        m2.metric("Tax Mismatch", summary.tax_mismatch)
-        m3.metric("Not Matched", summary.not_matched)
-        m4.metric("Duplicates", summary.duplicate)
-        m5.metric("Total ITC Taken", f"₹{summary.total_itc:,.2f}")
-
-        m6, m7, m8, m9 = st.columns(4)
-        m6.metric("GSTIN Mismatch", summary.gstin_mismatch)
-        m7.metric("Inv No Mismatch", summary.inv_no_mismatch)
-        m8.metric("Inv Date Mismatch", summary.inv_date_mismatch)
-        m9.metric("Missing in PR", summary.missing_in_pr)
-
-        itc1, itc2, itc3 = st.columns(3)
-        itc1.metric("Eligible IGST", f"₹{summary.total_itc_igst:,.2f}")
-        itc2.metric("Eligible CGST", f"₹{summary.total_itc_cgst:,.2f}")
-        itc3.metric("Eligible SGST", f"₹{summary.total_itc_sgst:,.2f}")
-
         st.subheader("Matching Results")
-        st.dataframe(result, use_container_width=True, height=450)
+        tab_all, tab_eligible, tab_pending, tab_blocked = st.tabs(
+            ["All", "Eligible", "Pending Review", "Non-Eligible"]
+        )
+        with tab_all:
+            st.dataframe(result, use_container_width=True, height=400)
+        with tab_eligible:
+            st.dataframe(
+                result[result["ITC Category"] == ITC_ELIGIBLE],
+                use_container_width=True,
+                height=400,
+            )
+        with tab_pending:
+            st.dataframe(
+                result[result["ITC Category"] == ITC_PENDING],
+                use_container_width=True,
+                height=400,
+            )
+        with tab_blocked:
+            st.dataframe(
+                result[result["ITC Category"] == ITC_NON_ELIGIBLE],
+                use_container_width=True,
+                height=400,
+            )
 
 else:
     hints = []
