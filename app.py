@@ -75,6 +75,11 @@ if gstr_mode == "Multiple periods (Consolidate)":
         key="gstr_periods",
     ) or []
 else:
+    st.caption(
+        "Upload the **GSTR-2B Excel downloaded from GST Portal** "
+        "(e.g. `09GSTIN_062026_GSTR2BQ_08072026.xlsx` with B2B/CDNR sheets). "
+        "Do **not** upload Payment Register, Tally payment exports, or files named only with a date."
+    )
     gstr_file = st.file_uploader("GSTR-2A / 2B (Excel)", type=["xlsx", "xls"], key="gstr")
 
 pr_ready = (sales_pr and service_pr) if pr_mode == "Sales + Service (Consolidate)" else bool(pr_file)
