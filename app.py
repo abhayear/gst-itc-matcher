@@ -426,8 +426,9 @@ if files_ready:
 
             st.markdown("**Open in email (Outlook / Gmail — recommended, no setup)**")
             st.caption(
-                "Click a button below — your mail app opens with the reminder pre-filled. "
-                "Send the email, then click **Mark as sent** to schedule Day 3 and Day 7 follow-ups."
+                "Use **Open in Gmail** if you use Gmail in the browser. "
+                "`mailto:` links often open Outlook/desktop Mail instead of Gmail, and long URLs can fail. "
+                "After sending, click **Mark as sent** to schedule follow-ups."
             )
 
             default_reminder = 2 if due_followups else 1
@@ -452,24 +453,49 @@ if files_ready:
                 st.info("Add vendor email addresses above to enable Open in email.")
             else:
                 for idx, entry in enumerate(mailto_entries):
-                    vc1, vc2, vc3 = st.columns([3, 2, 2])
+                    vc1, vc2, vc3, vc4 = st.columns([3, 1.5, 1.5, 1.5])
                     with vc1:
                         st.markdown(
                             f"**{entry['supplier_name']}**  \n"
                             f"{entry['email']} · ₹{entry['blocked_itc']:,.2f} blocked"
                         )
+                        if entry.get("url_truncated"):
+                            st.caption(
+                                "Long message — Gmail link may be shortened. "
+                                "Use **Copy text** and paste into the email body."
+                            )
                     with vc2:
                         st.link_button(
-                            "Open in email",
-                            entry["mailto_link"],
+                            "Open in Gmail",
+                            entry["gmail_link"],
                             use_container_width=True,
-                            help="Opens Outlook, Gmail, or your default mail app",
-                            key=f"mailto_{entry['vendor'].supplier_gstin}_{reminder_choice}_{idx}",
+                            help="Opens Gmail compose in your browser (recommended for Gmail users)",
+                            key=f"gmail_{entry['vendor'].supplier_gstin}_{reminder_choice}_{idx}",
                         )
                     with vc3:
+                        st.link_button(
+                            "Outlook web",
+                            entry["outlook_link"],
+                            use_container_width=True,
+                            help="Opens Outlook.com compose in browser",
+                            key=f"outlook_{entry['vendor'].supplier_gstin}_{reminder_choice}_{idx}",
+                        )
+                    with vc4:
                         with st.popover("Copy text"):
                             st.text_input("Subject", entry["subject"], disabled=True, key=f"subj_{idx}")
-                            st.text_area("Body", entry["body"], height=200, disabled=True, key=f"body_{idx}")
+                            st.text_area(
+                                "Body (select all & copy, then paste in Gmail)",
+                                entry["body"],
+                                height=220,
+                                key=f"body_{idx}",
+                            )
+                            st.link_button(
+                                "Desktop app (mailto)",
+                                entry["mailto_link"],
+                                use_container_width=True,
+                                help="Opens default desktop mail app — may not work with Gmail web",
+                                key=f"mailto_{entry['vendor'].supplier_gstin}_{reminder_choice}_{idx}",
+                            )
 
                 mark_col, log_col = st.columns(2)
                 with mark_col:

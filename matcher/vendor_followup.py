@@ -197,7 +197,7 @@ def build_reminder_email(
     gstin = vendor.supplier_gstin or "your GSTIN"
 
     if reminder_number <= 1:
-        subject = f"Request: File / amend GSTR-1{period_note} — ITC blocked on invoices {invoices[:60]}"
+        subject = _short_subject(vendor, reminder_number, return_period)
         body = f"""Dear {vendor.supplier_name},
 
 We are reconciling our Input Tax Credit (ITC) with GSTR-2B{period_note}.
@@ -217,7 +217,7 @@ Regards,
 {company_name}
 """
     elif reminder_number == 2:
-        subject = f"Follow-up (Day 3): GSTR-1 filing pending — ₹{amount:,.2f} ITC blocked"
+        subject = _short_subject(vendor, reminder_number, return_period)
         body = f"""Dear {vendor.supplier_name},
 
 This is a follow-up to our earlier email regarding GST invoice(s): {invoices}.
@@ -233,7 +233,7 @@ Regards,
 {company_name}
 """
     else:
-        subject = f"Final reminder (Day 7): ₹{amount:,.2f} ITC blocked — immediate action required"
+        subject = _short_subject(vendor, reminder_number, return_period)
         body = f"""Dear {vendor.supplier_name},
 
 Despite earlier reminders, invoice(s) {invoices} (GSTIN {gstin}) are still not compliant in GSTR-2B.
@@ -252,15 +252,97 @@ Regards,
     return subject, body.strip()
 
 
-def build_mailto_link(email: str, subject: str, body: str, max_length: int = 2000) -> str:
-    if not email:
-        return ""
-    link = f"mailto:{quote(email)}?subject={quote(subject)}&body={quote(body)}"
-    if len(link) <= max_length:
-        return link
-    trimmed = body[:800] + "\n\n[Full message truncated — copy complete text from the app if needed.]"
-    link = f"mailto:{quote(email)}?subject={quote(subject)}&body={quote(trimmed)}"
-    return link[:max_length]
+def _ascii_for_email_url(text: str) -> str:
+    """Use ASCII in URL params — special chars break mailto/Gmail compose links."""
+    return (
+        text.replace("₹", "Rs.")
+        .replace("—", "-")
+        .replace("–", "-")
+        .replace("•", "-")
+        .replace("×", "x")
+    )
+
+
+def _short_subject(vendor: VendorReminder, reminder_number: int, return_period: str = "") -> str:
+    """Keep subject short — long subjects break mailto and get truncated in Gmail."""
+    period_note = f" ({return_period})" if return_period else ""
+    amount = vendor.blocked_itc
+    count = vendor.invoice_count
+    if reminder_number <= 1:
+        return (
+            f"Request: File/amend GSTR-1{period_note} - "
+            f"ITC blocked ({count} invoices, Rs. {amount:,.2f})"
+        )
+    if reminder_number == 2:
+        return f"Follow-up Day 3: GSTR-1 pending - Rs. {amount:,.2f} ITC blocked"
+    return f"Final reminder Day 7: Rs. {amount:,.2f} ITC blocked - action required"
+
+
+def build_email_compose_links(
+    email: str,
+    subject: str,
+    body: str,
+    max_gmail_url: int = 7500,
+    max_mailto_url: int = 1800,
+) -> dict[str, Any]:
+    """Build Gmail web, Outlook web, and mailto links. Gmail web works best in browser."""
+    safe_subject = _ascii_for_email_url(subject)
+    safe_body = _ascii_for_email_url(body)
+
+    def gmail_url(body_text: str) -> str:
+        return (
+            "https://mail.google.com/mail/?view=cm&fs=1"
+            f"&to={quote(email)}"
+            f"&su={quote(safe_subject)}"
+            f"&body={quote(body_text)}"
+        )
+
+    def outlook_url(body_text: str) -> str:
+        return (
+            "https://outlook.live.com/mail/0/deeplink/compose"
+            f"?to={quote(email)}"
+            f"&subject={quote(safe_subject)}"
+            f"&body={quote(body_text)}"
+        )
+
+    body_for_url = safe_body
+    url_truncated = False
+    gmail = gmail_url(body_for_url)
+    if len(gmail) > max_gmail_url:
+        body_for_url = (
+            safe_body[:1200]
+            + "\n\n[Full message shortened in link. Use Copy text in the app and paste into Gmail.]"
+        )
+        url_truncated = True
+        gmail = gmail_url(body_for_url)
+    if len(gmail) > max_gmail_url:
+        body_for_url = (
+            safe_body[:500]
+            + "\n\n[Copy the full email from the app using Copy text, then paste into Gmail body.]"
+        )
+        gmail = gmail_url(body_for_url)
+
+    mailto_body = body_for_url
+    mailto = f"mailto:{quote(email)}?subject={quote(safe_subject)}&body={quote(mailto_body)}"
+    if len(mailto) > max_mailto_url:
+        mailto_body = (
+            safe_body[:400]
+            + "\n\n[Copy full message from app and paste into your email.]"
+        )
+        mailto = f"mailto:{quote(email)}?subject={quote(safe_subject)}&body={quote(mailto_body)}"
+        if len(mailto) > max_mailto_url:
+            mailto = f"mailto:{quote(email)}?subject={quote(safe_subject)}"
+
+    return {
+        "gmail_link": gmail,
+        "outlook_link": outlook_url(body_for_url),
+        "mailto_link": mailto,
+        "url_truncated": url_truncated or body_for_url != safe_body,
+    }
+
+
+def build_mailto_link(email: str, subject: str, body: str, max_length: int = 1800) -> str:
+    return build_email_compose_links(email, subject, body, max_mailto_url=max_length)["mailto_link"]
 
 
 def create_manual_followup_log_entry(
@@ -296,6 +378,7 @@ def build_vendor_mailto_entries(
         subject, body = build_reminder_email(
             vendor, reminder_number, company_name, sender_name, return_period
         )
+        links = build_email_compose_links(vendor.email, subject, body)
         entries.append(
             {
                 "vendor": vendor,
@@ -304,7 +387,10 @@ def build_vendor_mailto_entries(
                 "blocked_itc": vendor.blocked_itc,
                 "subject": subject,
                 "body": body,
-                "mailto_link": build_mailto_link(vendor.email, subject, body),
+                "gmail_link": links["gmail_link"],
+                "outlook_link": links["outlook_link"],
+                "mailto_link": links["mailto_link"],
+                "url_truncated": links["url_truncated"],
                 "reminder_number": reminder_number,
             }
         )
