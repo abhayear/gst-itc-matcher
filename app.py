@@ -31,7 +31,15 @@ try:
         generate_ai_recommendations,
         load_and_match_with_consolidation,
     )
-    from matcher.itc_dashboard import ITC_ELIGIBLE, ITC_NON_ELIGIBLE, ITC_PENDING
+    from matcher.itc_dashboard import (
+        ITC_ELIGIBLE,
+        ITC_NON_ELIGIBLE,
+        ITC_PENDING,
+        action_plan_dataframe,
+        build_itc_claim_plan,
+        generate_action_plan,
+        generate_optimization_insights,
+    )
 except Exception as import_error:
     st.error("App failed to start. Please refresh in a minute or contact support.")
     st.exception(import_error)
@@ -215,6 +223,73 @@ if files_ready:
         inv2.metric("Pending invoices", dashboard.pending_invoices)
         inv3.metric("Non-eligible invoices", dashboard.non_eligible_invoices)
         inv4.metric("Claim rate", f"{dashboard.claim_rate_pct}%")
+
+        claim_plan = build_itc_claim_plan(dashboard, result)
+        optimization_insights = generate_optimization_insights(dashboard, claim_plan, result)
+        action_plan = generate_action_plan(dashboard, result)
+
+        st.subheader("ITC Claim & Planning")
+        readiness = claim_plan.filing_readiness
+        if readiness == "Ready to File":
+            st.success(f"**{readiness}** — {claim_plan.filing_advice}")
+        elif readiness in ("File with Caution", "Partial Claim Only"):
+            st.warning(f"**{readiness}** — {claim_plan.filing_advice}")
+        else:
+            st.error(f"**{readiness}** — {claim_plan.filing_advice}")
+
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Claim Now (GSTR-3B)", f"₹{claim_plan.claim_now_total:,.2f}")
+        p2.metric("Hold (Pending)", f"₹{claim_plan.hold_itc:,.2f}")
+        p3.metric("Blocked", f"₹{claim_plan.blocked_itc:,.2f}")
+        p4.metric(
+            "Optimized Potential",
+            f"₹{claim_plan.optimized_claim_total:,.2f}",
+            delta=f"+₹{claim_plan.optimization_gain:,.2f}" if claim_plan.optimization_gain > 0 else None,
+        )
+
+        t1, t2 = st.columns(2)
+        with t1:
+            st.markdown("**GSTR-3B Table 4 — Claim amounts**")
+            table4_df = pd.DataFrame(
+                {
+                    "Claim Now": [
+                        f"₹{claim_plan.claim_now_igst:,.2f}",
+                        f"₹{claim_plan.claim_now_cgst:,.2f}",
+                        f"₹{claim_plan.claim_now_sgst:,.2f}",
+                    ],
+                    "Hold (Pending)": [
+                        f"₹{dashboard.pending_igst:,.2f}",
+                        f"₹{dashboard.pending_cgst:,.2f}",
+                        f"₹{dashboard.pending_sgst:,.2f}",
+                    ],
+                },
+                index=["IGST", "CGST", "SGST"],
+            )
+            st.dataframe(table4_df, use_container_width=True)
+        with t2:
+            st.markdown("**Current vs optimized claim**")
+            claim_compare_df = pd.DataFrame(
+                {
+                    "Amount": [
+                        claim_plan.claim_now_total,
+                        claim_plan.optimized_claim_total,
+                    ]
+                },
+                index=["Current Claim", "Optimized Potential"],
+            )
+            st.bar_chart(claim_compare_df, height=280)
+
+        st.markdown("**Optimization insights**")
+        for insight in optimization_insights:
+            clean = insight.replace("**", "")
+            st.info(clean)
+
+        st.markdown("**Action plan**")
+        st.dataframe(
+            action_plan_dataframe(action_plan),
+            use_container_width=True,
+            hide_index=True,
+        )
 
         st.subheader("AI Recommendations")
         for tip in generate_ai_recommendations(dashboard, result):

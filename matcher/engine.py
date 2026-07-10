@@ -12,10 +12,15 @@ from .column_mapping import read_gstr_excel, read_purchase_register_excel
 from .consolidate import consolidate_gstr_registers, consolidate_purchase_registers
 from .itc_dashboard import (
     ITCDashboardSummary,
+    action_plan_dataframe,
+    build_itc_claim_plan,
     build_itc_dashboard,
+    claim_plan_rows,
     dashboard_summary_rows,
     enrich_match_result,
+    generate_action_plan,
     generate_ai_recommendations,
+    generate_optimization_insights,
 )
 from .normalize import (
     amounts_equal,
@@ -347,7 +352,11 @@ def load_and_match_with_consolidation(
     result, summary, dashboard = match_invoices(pr_std, gstr_std, tax_tolerance=tax_tolerance)
     return pr_std, gstr_std, result, summary, dashboard
 
-def _summary_rows(summary: MatchSummary, dashboard: ITCDashboardSummary | None = None) -> list[tuple[str, Any]]:
+def _summary_rows(
+    summary: MatchSummary,
+    dashboard: ITCDashboardSummary | None = None,
+    result: pd.DataFrame | None = None,
+) -> list[tuple[str, Any]]:
     rows = [
         ("Total Rows", summary.total_rows),
         ("Fully Matched", summary.fully_matched),
@@ -366,6 +375,9 @@ def _summary_rows(summary: MatchSummary, dashboard: ITCDashboardSummary | None =
     ]
     if dashboard is not None:
         rows.extend([("", ""), *dashboard_summary_rows(dashboard)])
+        if result is not None:
+            plan = build_itc_claim_plan(dashboard, result)
+            rows.extend([("", ""), *claim_plan_rows(plan)])
     return rows
 
 
@@ -377,12 +389,20 @@ def export_to_excel(
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         result.to_excel(writer, sheet_name="ITC Matching", index=False)
-        summary_df = pd.DataFrame(_summary_rows(summary, dashboard), columns=["Metric", "Value"])
+        summary_df = pd.DataFrame(_summary_rows(summary, dashboard, result), columns=["Metric", "Value"])
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
         if dashboard is not None:
+            plan = build_itc_claim_plan(dashboard, result)
             tips = generate_ai_recommendations(dashboard, result)
             tips_df = pd.DataFrame({"AI Recommendation": tips})
             tips_df.to_excel(writer, sheet_name="AI Recommendations", index=False)
+            opt_insights = generate_optimization_insights(dashboard, plan, result)
+            opt_df = pd.DataFrame({"Optimization Insight": opt_insights})
+            opt_df.to_excel(writer, sheet_name="ITC Optimization", index=False)
+            claim_df = pd.DataFrame(claim_plan_rows(plan), columns=["Metric", "Value"])
+            claim_df.to_excel(writer, sheet_name="ITC Claim Plan", index=False)
+            actions = generate_action_plan(dashboard, result)
+            action_plan_dataframe(actions).to_excel(writer, sheet_name="Action Plan", index=False)
 
         workbook = writer.book
         worksheet = writer.sheets["ITC Matching"]
@@ -405,7 +425,7 @@ def export_to_csv(
     buffer.write("\ufeff".encode("utf-8"))
     result.to_csv(buffer, index=False, lineterminator="\n")
     buffer.write(b"\n")
-    summary_df = pd.DataFrame(_summary_rows(summary, dashboard), columns=["Metric", "Value"])
+    summary_df = pd.DataFrame(_summary_rows(summary, dashboard, result), columns=["Metric", "Value"])
     summary_df.to_csv(buffer, index=False, lineterminator="\n")
     buffer.seek(0)
     return buffer.getvalue()
@@ -446,7 +466,7 @@ def export_to_pdf(
     ]
 
     summary_table_data = [["Metric", "Value"]] + [
-        [metric, _pdf_format_cell(value)] for metric, value in _summary_rows(summary, dashboard)
+        [metric, _pdf_format_cell(value)] for metric, value in _summary_rows(summary, dashboard, result)
     ]
     summary_table = Table(summary_table_data, colWidths=[3.2 * inch, 2.0 * inch])
     summary_table.setStyle(
