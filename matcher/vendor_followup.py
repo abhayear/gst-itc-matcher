@@ -252,10 +252,68 @@ Regards,
     return subject, body.strip()
 
 
-def build_mailto_link(email: str, subject: str, body: str) -> str:
+def build_mailto_link(email: str, subject: str, body: str, max_length: int = 2000) -> str:
     if not email:
         return ""
-    return f"mailto:{quote(email)}?subject={quote(subject)}&body={quote(body)}"
+    link = f"mailto:{quote(email)}?subject={quote(subject)}&body={quote(body)}"
+    if len(link) <= max_length:
+        return link
+    trimmed = body[:800] + "\n\n[Full message truncated — copy complete text from the app if needed.]"
+    link = f"mailto:{quote(email)}?subject={quote(subject)}&body={quote(trimmed)}"
+    return link[:max_length]
+
+
+def create_manual_followup_log_entry(
+    vendor: VendorReminder,
+    reminder_number: int,
+    subject: str,
+) -> FollowUpLogEntry:
+    sent_at = datetime.now()
+    return FollowUpLogEntry(
+        supplier_gstin=vendor.supplier_gstin,
+        supplier_name=vendor.supplier_name,
+        email=vendor.email,
+        reminder_number=reminder_number,
+        sent_at=sent_at,
+        blocked_itc=vendor.blocked_itc,
+        next_follow_up_date=_next_follow_up_date(reminder_number, sent_at.date()),
+        status="Sent via email client",
+        subject=subject,
+    )
+
+
+def build_vendor_mailto_entries(
+    vendors: list[VendorReminder],
+    reminder_number: int,
+    company_name: str,
+    sender_name: str,
+    return_period: str = "",
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for vendor in vendors:
+        if not vendor.email or "@" not in vendor.email:
+            continue
+        subject, body = build_reminder_email(
+            vendor, reminder_number, company_name, sender_name, return_period
+        )
+        entries.append(
+            {
+                "vendor": vendor,
+                "supplier_name": vendor.supplier_name,
+                "email": vendor.email,
+                "blocked_itc": vendor.blocked_itc,
+                "subject": subject,
+                "body": body,
+                "mailto_link": build_mailto_link(vendor.email, subject, body),
+                "reminder_number": reminder_number,
+            }
+        )
+    return entries
+
+
+def reminder_type_label(reminder_number: int) -> str:
+    labels = {1: "Initial reminder", 2: "Day 3 follow-up", 3: "Day 7 final reminder"}
+    return labels.get(reminder_number, f"Reminder #{reminder_number}")
 
 
 def _next_follow_up_date(reminder_number: int, sent_on: date) -> date | None:

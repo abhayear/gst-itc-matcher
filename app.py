@@ -42,14 +42,16 @@ try:
     )
     from matcher.vendor_followup import (
         append_followup_log,
-        build_mailto_link,
-        build_reminder_email,
+        build_vendor_mailto_entries,
+        create_manual_followup_log_entry,
+        create_manual_followup_log_entry,
         export_followup_log_excel,
         extract_vendor_reminders,
         followup_log_dataframe,
         get_due_followups,
         load_smtp_config,
         merge_editor_into_reminders,
+        reminder_type_label,
         scheduled_followups_preview,
         send_vendor_reminder,
         vendor_reminders_dataframe,
@@ -322,11 +324,11 @@ if files_ready:
 
         st.subheader("Vendor ITC Recovery — Email Reminders")
         st.caption(
-            "One-click email reminders to non-compliant vendors blocking your ITC. "
-            "Automated follow-ups are scheduled on Day 3 and Day 7 after each send."
+            "Email non-compliant vendors to recover blocked ITC. "
+            "Use **Open in email** (Outlook/Gmail — no setup) or optional SMTP for automatic send."
         )
 
-        with st.expander("Email & follow-up settings", expanded=not load_smtp_config(_secrets_dict())):
+        with st.expander("Email settings (company name, contacts, optional SMTP)", expanded=False):
             es1, es2, es3 = st.columns(3)
             company_name = es1.text_input(
                 "Your company name",
@@ -350,11 +352,11 @@ if files_ready:
 
             smtp_cfg = load_smtp_config(_secrets_dict())
             if smtp_cfg:
-                st.success(f"SMTP configured — emails will send from **{smtp_cfg.from_email}**")
+                st.success(f"Optional SMTP active — can auto-send from **{smtp_cfg.from_email}**")
             else:
-                st.warning(
-                    "SMTP not configured. Add `[email]` settings in Streamlit secrets "
-                    "(see `.streamlit/secrets.toml.example`) or use **Open in email** links below."
+                st.info(
+                    "No SMTP configured — that's fine. Use **Open in email** below to send via "
+                    "Outlook, Gmail, or your default mail app. No secrets or setup required."
                 )
 
             contacts_file = st.file_uploader(
@@ -407,7 +409,8 @@ if files_ready:
             )
 
             selected_vendors = merge_editor_into_reminders(vendor_reminders, edited_vendors)
-            missing_emails = [v.supplier_name for v in selected_vendors if not v.email]
+            vendors_with_email = [v for v in selected_vendors if v.email and "@" in v.email]
+            missing_emails = [v.supplier_name for v in selected_vendors if not v.email or "@" not in v.email]
             if missing_emails:
                 st.warning(
                     f"Add email for {len(missing_emails)} vendor(s) before sending: "
@@ -415,95 +418,168 @@ if files_ready:
                     + ("…" if len(missing_emails) > 5 else "")
                 )
 
+            company_name = st.session_state.get("vf_company_name", "Our Company")
+            sender_name = st.session_state.get("vf_sender_name", "Accounts Team")
+            return_period = st.session_state.get("vf_return_period", "")
             smtp_cfg = load_smtp_config(_secrets_dict())
-            btn_col1, btn_col2, btn_col3 = st.columns(3)
-            with btn_col1:
-                send_all = st.button(
-                    "Send reminders to all vendors (1-click)",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=not selected_vendors or bool(missing_emails) or not smtp_cfg,
-                )
-            with btn_col2:
-                send_due = st.button(
-                    f"Send due follow-ups ({len(due_followups)})",
-                    use_container_width=True,
-                    disabled=not due_followups or not smtp_cfg,
-                )
-            with btn_col3:
-                st.download_button(
-                    "Download follow-up log",
-                    data=export_followup_log_excel(st.session_state["vendor_followup_log"]),
-                    file_name="vendor_followup_log.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
+            due_followups = get_due_followups(st.session_state["vendor_followup_log"], vendor_reminders)
 
-            if send_all and smtp_cfg:
-                sent_entries = []
-                errors = []
-                for vendor in selected_vendors:
-                    outcome = send_vendor_reminder(
-                        vendor,
-                        1,
-                        smtp_cfg,
-                        company_name or "Our Company",
-                        sender_name or "Accounts Team",
-                        return_period,
+            st.markdown("**Open in email (Outlook / Gmail — recommended, no setup)**")
+            st.caption(
+                "Click a button below — your mail app opens with the reminder pre-filled. "
+                "Send the email, then click **Mark as sent** to schedule Day 3 and Day 7 follow-ups."
+            )
+
+            default_reminder = 2 if due_followups else 1
+            reminder_choice = st.radio(
+                "Email type",
+                options=[1, 2, 3],
+                format_func=reminder_type_label,
+                index=max(0, default_reminder - 1),
+                horizontal=True,
+                key="vf_reminder_type",
+            )
+
+            mailto_entries = build_vendor_mailto_entries(
+                vendors_with_email,
+                reminder_choice,
+                company_name,
+                sender_name,
+                return_period,
+            )
+
+            if not mailto_entries:
+                st.info("Add vendor email addresses above to enable Open in email.")
+            else:
+                for idx, entry in enumerate(mailto_entries):
+                    vc1, vc2, vc3 = st.columns([3, 2, 2])
+                    with vc1:
+                        st.markdown(
+                            f"**{entry['supplier_name']}**  \n"
+                            f"{entry['email']} · ₹{entry['blocked_itc']:,.2f} blocked"
+                        )
+                    with vc2:
+                        st.link_button(
+                            "Open in email",
+                            entry["mailto_link"],
+                            use_container_width=True,
+                            help="Opens Outlook, Gmail, or your default mail app",
+                            key=f"mailto_{entry['vendor'].supplier_gstin}_{reminder_choice}_{idx}",
+                        )
+                    with vc3:
+                        with st.popover("Copy text"):
+                            st.text_input("Subject", entry["subject"], disabled=True, key=f"subj_{idx}")
+                            st.text_area("Body", entry["body"], height=200, disabled=True, key=f"body_{idx}")
+
+                mark_col, log_col = st.columns(2)
+                with mark_col:
+                    mark_sent = st.button(
+                        f"Mark {len(mailto_entries)} email(s) as sent — schedule follow-ups",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=not mailto_entries,
                     )
-                    if outcome.success and outcome.log_entry:
-                        sent_entries.append(outcome.log_entry)
-                    else:
-                        errors.append(f"{vendor.supplier_name}: {outcome.message}")
-                if sent_entries:
+                with log_col:
+                    st.download_button(
+                        "Download follow-up log",
+                        data=export_followup_log_excel(st.session_state["vendor_followup_log"]),
+                        file_name="vendor_followup_log.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+                if mark_sent and mailto_entries:
+                    sent_entries = [
+                        create_manual_followup_log_entry(
+                            entry["vendor"],
+                            entry["reminder_number"],
+                            entry["subject"],
+                        )
+                        for entry in mailto_entries
+                    ]
                     st.session_state["vendor_followup_log"] = append_followup_log(
                         st.session_state["vendor_followup_log"],
                         sent_entries,
                     )
                     st.success(
-                        f"Sent {len(sent_entries)} reminder email(s). "
-                        f"Follow-ups auto-scheduled for Day 3 and Day 7."
+                        f"Logged {len(sent_entries)} reminder(s). "
+                        f"Day 3 and Day 7 follow-ups are now scheduled — return and use "
+                        f"**{reminder_type_label(min(reminder_choice + 1, 3))}** when due."
                     )
-                for err in errors:
-                    st.error(err)
 
-            if send_due and smtp_cfg:
-                sent_entries = []
-                for vendor, reminder_num in due_followups:
-                    outcome = send_vendor_reminder(
-                        vendor,
-                        reminder_num,
-                        smtp_cfg,
-                        company_name or "Our Company",
-                        sender_name or "Accounts Team",
-                        return_period,
+            if smtp_cfg:
+                st.divider()
+                st.markdown("**Optional: auto-send via SMTP**")
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    send_all = st.button(
+                        "Auto-send to all vendors (SMTP)",
+                        use_container_width=True,
+                        disabled=not vendors_with_email,
                     )
-                    if outcome.success and outcome.log_entry:
-                        sent_entries.append(outcome.log_entry)
-                    else:
-                        st.error(f"{vendor.supplier_name}: {outcome.message}")
-                if sent_entries:
-                    st.session_state["vendor_followup_log"] = append_followup_log(
-                        st.session_state["vendor_followup_log"],
-                        sent_entries,
+                with btn_col2:
+                    send_due = st.button(
+                        f"Auto-send due follow-ups ({len(due_followups)})",
+                        use_container_width=True,
+                        disabled=not due_followups,
                     )
-                    st.success(f"Sent {len(sent_entries)} follow-up email(s).")
+
+                if send_all and smtp_cfg:
+                    sent_entries = []
+                    errors = []
+                    for vendor in vendors_with_email:
+                        outcome = send_vendor_reminder(
+                            vendor,
+                            reminder_choice,
+                            smtp_cfg,
+                            company_name,
+                            sender_name,
+                            return_period,
+                        )
+                        if outcome.success and outcome.log_entry:
+                            sent_entries.append(outcome.log_entry)
+                        else:
+                            errors.append(f"{vendor.supplier_name}: {outcome.message}")
+                    if sent_entries:
+                        st.session_state["vendor_followup_log"] = append_followup_log(
+                            st.session_state["vendor_followup_log"],
+                            sent_entries,
+                        )
+                        st.success(f"SMTP sent {len(sent_entries)} email(s).")
+                    for err in errors:
+                        st.error(err)
+
+                if send_due and smtp_cfg:
+                    sent_entries = []
+                    for vendor, reminder_num in due_followups:
+                        outcome = send_vendor_reminder(
+                            vendor,
+                            reminder_num,
+                            smtp_cfg,
+                            company_name,
+                            sender_name,
+                            return_period,
+                        )
+                        if outcome.success and outcome.log_entry:
+                            sent_entries.append(outcome.log_entry)
+                        else:
+                            st.error(f"{vendor.supplier_name}: {outcome.message}")
+                    if sent_entries:
+                        st.session_state["vendor_followup_log"] = append_followup_log(
+                            st.session_state["vendor_followup_log"],
+                            sent_entries,
+                        )
+                        st.success(f"SMTP sent {len(sent_entries)} follow-up email(s).")
 
             scheduled = scheduled_followups_preview(st.session_state["vendor_followup_log"])
             if not scheduled.empty:
                 st.markdown("**Scheduled follow-ups**")
                 st.dataframe(scheduled, use_container_width=True, hide_index=True)
-
-            if not smtp_cfg:
-                st.markdown("**Open in email (no SMTP configured)**")
-                for vendor in selected_vendors[:5]:
-                    if not vendor.email:
-                        continue
-                    subject, body = build_reminder_email(
-                        vendor, 1, company_name or "Our Company", sender_name or "Accounts Team", return_period
+                if due_followups:
+                    st.info(
+                        f"{len(due_followups)} follow-up(s) due today — select "
+                        f"**{reminder_type_label(due_followups[0][1])}** above and use Open in email."
                     )
-                    link = build_mailto_link(vendor.email, subject, body)
-                    st.markdown(f"- [{vendor.supplier_name}]({link}) — ₹{vendor.blocked_itc:,.2f} blocked")
 
             if st.session_state["vendor_followup_log"]:
                 with st.expander("Follow-up history"):
