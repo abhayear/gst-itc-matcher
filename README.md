@@ -7,7 +7,8 @@ Match Purchase Register invoices with GSTR-2A/2B and generate an ITC Taken repor
 - Auto-detects columns from Tally, Busy, SAP, and GST portal Excel exports
 - Match statuses: Fully Matched, Tax Mismatch, GSTIN Mismatch, Inv No Mismatch, Inv Date Mismatch, Not Matched, Duplicate Invoice
 - Calculates eligible ITC (IGST, CGST, SGST)
-- Exports formatted Excel with Summary sheet
+- **Vendor email reminders** — one-click SMTP reminders to non-compliant suppliers; Day 3 & Day 7 follow-ups
+- Exports formatted Excel with Summary, ITC Claim Plan, Action Plan, and Vendor Follow-up sheets
 - Web UI via Streamlit
 
 ## Quick Start
@@ -19,6 +20,34 @@ streamlit run app.py
 ```
 
 Or double-click **`start.bat`** on Windows.
+
+## Vendor email reminders (recover blocked ITC)
+
+After matching, the **Vendor ITC Recovery** section lists suppliers blocking ITC (Not Matched, GSTIN/invoice/tax mismatches).
+
+1. Optionally upload a **vendor contacts** CSV/Excel with `GSTIN` and `Email` columns
+2. Enter vendor emails in the table (or load from contacts file)
+3. Click **Send reminders to all vendors (1-click)** — initial email goes out; follow-ups auto-schedule for Day 3 and Day 7
+4. On later visits, click **Send due follow-ups** for automated escalation emails
+
+### SMTP setup (Streamlit Cloud)
+
+In your app **Settings → Secrets**, add:
+
+```toml
+[email]
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+smtp_user = "your-email@gmail.com"
+smtp_password = "your-app-password"
+from_email = "your-email@gmail.com"
+from_name = "Your Company Accounts"
+company_name = "Your Company Pvt Ltd"
+```
+
+For Gmail, use an [App Password](https://support.google.com/accounts/answer/185833). Without SMTP, use **Open in email** mailto links instead.
+
+See `.streamlit/secrets.toml.example` for a full template.
 
 ### Usage
 

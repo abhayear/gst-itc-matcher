@@ -22,6 +22,7 @@ from .itc_dashboard import (
     generate_ai_recommendations,
     generate_optimization_insights,
 )
+from .vendor_followup import extract_vendor_reminders, vendor_reminders_dataframe
 from .normalize import (
     amounts_equal,
     normalize_amount,
@@ -403,6 +404,11 @@ def export_to_excel(
             claim_df.to_excel(writer, sheet_name="ITC Claim Plan", index=False)
             actions = generate_action_plan(dashboard, result)
             action_plan_dataframe(actions).to_excel(writer, sheet_name="Action Plan", index=False)
+            vendors = extract_vendor_reminders(result)
+            if vendors:
+                vendor_reminders_dataframe(vendors).to_excel(
+                    writer, sheet_name="Vendor Follow-up", index=False
+                )
 
         workbook = writer.book
         worksheet = writer.sheets["ITC Matching"]
